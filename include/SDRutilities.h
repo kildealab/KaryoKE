@@ -134,8 +134,8 @@ inline bool isIndelSizedFragment(const SDRfragment& fragment)
 //  - Small deletion: two consecutive pieces of the same strand and orientation, with 1-50 bases missing between them (or none when bases were inserted there),
 //    e.g. 1/0/50.000000/0, 1/50.000005/263.2/1 is 4 bases deleted (50.000001-50.000004); 1/0/50.000000/0, 1/50.000100/263.2/1 is 99 (the largest indel),
 //    are joined back into one piece, so the record reads as if the indel never happened (often a plain whole copy of the chromosome).
-// Gaps of 100 bp or more, pieces of 100 bp or more, and pieces at either end of a record are left alone. Circular records and the baseline records (newStrandID <=
-// numOriginalStrands) are not changed. A site with both a deletion and an insertion is ONE indel.
+// Gaps of 100 bp or more, pieces of 100 bp or more, and pieces at either end of a linear record are left alone. Baseline records (newStrandID <=
+// numOriginalStrands) are not changed. Circular records (ecDNA, rings) are cleaned too, including the site where the circle closes (Samy, 2026-11-09). A site with both a deletion and an insertion is ONE indel.
 //  - Excised partner: as for long deletions, the deleted bases may be listed as their own record, or not at all. A single-piece record of the same strand
 //    covering the deleted bases (each end within one base of the gap's, so 1/50.000001/50.000004/0 and 1/50.000000/50.000005/0 both match the gap above) is
 //    part of the indel and is taken out too, so it is neither scored nor drawn; each such record is used for one indel only. Without this the leftover piece
@@ -173,14 +173,31 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& subHeader, int numOriginalS
 
     for (SDRdataRecord& record : cleaned.dataRecords)
     {
-        if (!record.linear || !isRearrangementCandidate(record.newStrandID, numOriginalStrands) || record.fragments.size() < 2)
+        if (!isRearrangementCandidate(record.newStrandID, numOriginalStrands) || record.fragments.size() < 2)
         {
             continue;
         }
 
-        const std::vector<SDRfragment>& original = record.fragments;
+        // A circle (ecDNA or ring) has no ends: it is read from its first piece of 100 bp or more, and that piece is listed again at the end so the
+        // site where the circle closes (last piece -> first piece) is checked too. The repeated piece is taken back out below.
+        std::vector<SDRfragment> original = record.fragments;
+
+        if (!record.linear)
+        {
+            const auto firstLarge = std::find_if(original.begin(), original.end(), [](const SDRfragment& fragment) { return !isIndelSizedFragment(fragment); });
+
+            if (firstLarge == original.end())
+            {
+                continue;
+            }
+
+            std::rotate(original.begin(), firstLarge, original.end());
+            original.push_back(original.front());
+        }
+
         std::vector<SDRfragment> kept = {original[0]};
         std::size_t i = 1;
+        bool closingPieceJoined = false;					// Circles: the repeated first piece was joined onto the last one (an indel deletion where the circle closes)
 
         while (i < original.size())
         {
@@ -245,6 +262,7 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& subHeader, int numOriginalS
             {
                 left.oldEndPosition = right.oldEndPosition;
                 left.hasCentromere = left.hasCentromere || right.hasCentromere;
+                closingPieceJoined = closingPieceJoined || (!record.linear && runEnd + 1 == original.size());
             }
             else
             {
@@ -252,6 +270,20 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& subHeader, int numOriginalS
             }
 
             i = runEnd + 1;
+        }
+
+        if (!record.linear)							// Take the repeated first piece back out
+        {
+            if (closingPieceJoined && kept.size() > 1)				// The last piece now runs on into the first: one piece
+            {
+                kept.back().oldEndPosition = kept.front().oldEndPosition;
+                kept.back().hasCentromere = kept.back().hasCentromere || kept.front().hasCentromere;
+                kept.erase(kept.begin());
+            }
+            else if (!closingPieceJoined && kept.size() > 1)
+            {
+                kept.pop_back();
+            }
         }
 
         record.fragments = kept;
