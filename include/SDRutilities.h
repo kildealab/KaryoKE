@@ -146,6 +146,7 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& subHeader, int numOriginalS
 {
     SDRsubHeader cleaned = subHeader;
     std::set<int> excisedRecordIDs;							// Excised indel partners, removed once every record is processed
+    std::map<std::pair<int, std::size_t>, std::size_t> insertionOnlySites;		// {newStrandID, index of the piece after the site in the cleaned record} -> its insertion-only indel
 
     // The record listing the deleted bases [gapLow, gapHigh] of strandID on their own (see above), or -1.
     auto findExcisedPartner = [&](int strandID, double gapLow, double gapHigh) -> int
@@ -237,13 +238,63 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& subHeader, int numOriginalS
             const bool joinable = left.oldStrandID == right.oldStrandID && leftReversed == rightReversed && !isIndelSizedFragment(left) && !isIndelSizedFragment(right)
                                   && distance >= 0 && deletedBases <= indelMaxBases && (deletedBases > 0 || insertion);
 
-            if (joinable || insertion)
+            // Bases lost at a breakpoint the reading does not carry on through (Samy, 2026-11-09): the orientation changes, as at either end of an inversion,
+            // or a reversed piece is followed by the reversed piece above it (two touching inversions). The two ends that were joined in the original strand are
+            //   forward -> reversed: the left piece's end and the right piece's end (its low end), e.g. 2/0/130, 2/180/130.000050 (49 bases lost)
+            //   reversed -> forward: the left piece's start (its high end) and the right piece's start, e.g. 2/180/130, 2/180.000060/258.1 (59 bases lost)
+            //   reversed -> reversed, right piece above: the left piece's start and the right piece's end, e.g. 7/80/50, 7/120/80.000030 (29 bases lost)
+            // 1-99 bases lost there is an indel deletion. The pieces are left as they are: every detector already treats < 100 bases lost at a breakpoint as touching
+            // (see svToleranceMbp). 100 bases or more is not an indel (a deletion-inversion, deletion-translocation, ...).
+            long long breakpointLostBases = 0;
+            double breakpointLow = 0.0;
+            double breakpointHigh = 0.0;
+
+            // The record may also be listed from the other chromosome end (e.g. a pericentric inversion 2/258.1/130, 2/50/129.999970/1, 2/50/0): then the pair
+            // is read flipped, the right piece first, each piece's start and end swapped (29 bases lost between 129.999970 and 130 here).
+            auto lostAtBreakpoint = [&](const SDRfragment& first, const SDRfragment& second)
+            {
+                const bool firstReversed = first.oldStartPosition > first.oldEndPosition;
+                const bool secondReversed = second.oldStartPosition > second.oldEndPosition;
+
+                if (!firstReversed && !secondReversed)
+                {
+                    return false;
+                }
+
+                const double from = (!firstReversed) ? first.oldEndPosition : first.oldStartPosition;
+                const double to = (firstReversed && !secondReversed) ? second.oldStartPosition : second.oldEndPosition;
+                const long long breakDistance = basesBetween(from, to);
+
+                if (breakDistance < 2 || breakDistance - 1 > indelMaxBases)
+                {
+                    return false;
+                }
+
+                breakpointLostBases = breakDistance - 1;
+                breakpointLow = from;
+                breakpointHigh = to;
+                return true;
+            };
+
+            if (!joinable && left.oldStrandID == right.oldStrandID && !isIndelSizedFragment(left) && !isIndelSizedFragment(right))
+            {
+                const SDRfragment flippedFirst{right.oldStrandID, right.oldEndPosition, right.oldStartPosition, right.hasCentromere};
+                const SDRfragment flippedSecond{left.oldStrandID, left.oldEndPosition, left.oldStartPosition, left.hasCentromere};
+
+                if (!lostAtBreakpoint(left, right) && record.linear && (leftReversed || rightReversed))	// A circle has no ends to read it from
+                {
+                    lostAtBreakpoint(flippedFirst, flippedSecond);
+                }
+            }
+
+            if (joinable || insertion || breakpointLostBases > 0)
             {
                 int excisedStrandID = -1;
 
-                if (joinable && deletedBases > 0)
+                if ((joinable && deletedBases > 0) || breakpointLostBases > 0)
                 {
-                    excisedStrandID = findExcisedPartner(left.oldStrandID, std::min(left.oldEndPosition, right.oldStartPosition), std::max(left.oldEndPosition, right.oldStartPosition));
+                    excisedStrandID = joinable ? findExcisedPartner(left.oldStrandID, std::min(left.oldEndPosition, right.oldStartPosition), std::max(left.oldEndPosition, right.oldStartPosition))
+                                               : findExcisedPartner(left.oldStrandID, breakpointLow, breakpointHigh);
 
                     if (excisedStrandID != -1)
                     {
@@ -253,7 +304,7 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& subHeader, int numOriginalS
 
                 if (indels)
                 {
-                    indels->push_back({left.oldStrandID, record.newStrandID, left.oldEndPosition, joinable ? static_cast<int>(deletedBases) : 0,
+                    indels->push_back({left.oldStrandID, record.newStrandID, left.oldEndPosition, static_cast<int>(joinable ? deletedBases : breakpointLostBases),
                                        static_cast<int>(insertedBases), excisedStrandID});
                 }
             }
@@ -267,6 +318,11 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& subHeader, int numOriginalS
             else
             {
                 kept.push_back(right);
+
+                if (insertion && breakpointLostBases == 0 && record.linear && indels)	// Bases lost at this junction may be found between records below: same site
+                {
+                    insertionOnlySites[{record.newStrandID, kept.size() - 1}] = indels->size() - 1;
+                }
             }
 
             i = runEnd + 1;
@@ -287,6 +343,106 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& subHeader, int numOriginalS
         }
 
         record.fragments = kept;
+    }
+
+    // Bases lost at a breakpoint BETWEEN records (Samy, 2026-11-09), e.g. the two derivatives of a balanced translocation 5/0/120/1, 6/160.000050/181.8/0 and
+    // 6/0/160/1, 5/120.000001/192.2/0 (49 bases of chromosome 6 lost), or an excised piece that lost a few bases at its ends. Every piece of 100 bp or more of
+    // each strand, over all rearranged records, is sorted by position; 1-99 bases missing between two neighbouring pieces is an indel deletion, counted under the
+    // record holding the lower piece. Neighbours listed next to each other in one record were already judged above and are skipped.
+    {
+        struct PooledPiece
+        {
+            double low;
+            double high;
+            int newStrandID;
+            std::size_t index;
+            std::size_t recordSize;
+            bool linear;
+            bool reversed;
+        };
+
+        std::map<int, std::vector<PooledPiece>> piecesByStrand;
+
+        for (const SDRdataRecord& record : cleaned.dataRecords)
+        {
+            if (!isRearrangementCandidate(record.newStrandID, numOriginalStrands) || excisedRecordIDs.count(record.newStrandID))
+            {
+                continue;
+            }
+
+            for (std::size_t k = 0; k < record.fragments.size(); ++k)
+            {
+                const SDRfragment& fragment = record.fragments[k];
+
+                if (!isIndelSizedFragment(fragment))
+                {
+                    piecesByStrand[fragment.oldStrandID].push_back({std::min(fragment.oldStartPosition, fragment.oldEndPosition), std::max(fragment.oldStartPosition, fragment.oldEndPosition),
+                                                                    record.newStrandID, k, record.fragments.size(), record.linear,
+                                                                    fragment.oldStartPosition > fragment.oldEndPosition});
+                }
+            }
+        }
+
+        for (auto& [strandID, pieces] : piecesByStrand)
+        {
+            std::sort(pieces.begin(), pieces.end(), [](const PooledPiece& a, const PooledPiece& b) { return a.low != b.low ? a.low < b.low : a.high < b.high; });
+
+            for (std::size_t k = 0; k + 1 < pieces.size(); ++k)
+            {
+                const PooledPiece& lower = pieces[k];
+                const PooledPiece& upper = pieces[k + 1];
+                const long long distance = basesBetween(lower.high, upper.low);
+
+                if (distance < 2 || distance - 1 > indelMaxBases)
+                {
+                    continue;
+                }
+
+                const std::size_t apart = (lower.index > upper.index) ? lower.index - upper.index : upper.index - lower.index;
+                const bool neighboursInRecord = lower.newStrandID == upper.newStrandID && (apart == 1 || (!lower.linear && apart + 1 == lower.recordSize));
+
+                if (neighboursInRecord)
+                {
+                    continue;
+                }
+
+                const int excisedStrandID = findExcisedPartner(strandID, lower.high, upper.low);
+
+                if (excisedStrandID != -1)
+                {
+                    excisedRecordIDs.insert(excisedStrandID);
+                }
+
+                if (!indels)
+                {
+                    continue;
+                }
+
+                // Bases inserted at the same junction (between the lost bases and the other chromosome's piece) make it ONE indel with both. The junction is
+                // just after the lower piece's high end, or just before the upper piece's low end, depending on how each piece is listed.
+                const std::pair<int, std::size_t> sites[] = {
+                    {lower.newStrandID, lower.reversed ? lower.index : lower.index + 1},
+                    {upper.newStrandID, upper.reversed ? upper.index + 1 : upper.index}};
+                bool merged = false;
+
+                for (const std::pair<int, std::size_t>& site : sites)
+                {
+                    const auto it = insertionOnlySites.find(site);
+
+                    if (!merged && it != insertionOnlySites.end() && (*indels)[it->second].deletedBases == 0)
+                    {
+                        (*indels)[it->second].deletedBases = static_cast<int>(distance - 1);
+                        (*indels)[it->second].excisedStrandID = excisedStrandID;
+                        merged = true;
+                    }
+                }
+
+                if (!merged)
+                {
+                    indels->push_back({strandID, lower.newStrandID, lower.high, static_cast<int>(distance - 1), 0, excisedStrandID});
+                }
+            }
+        }
     }
 
     cleaned.dataRecords.erase(std::remove_if(cleaned.dataRecords.begin(), cleaned.dataRecords.end(),
