@@ -1044,6 +1044,60 @@ inline bool gapTouchesReversedFragment(const std::vector<SDRnormalizedFragment>&
     return (gap.leftIndex >= 0 && sorted[gap.leftIndex].reversed) || (gap.rightIndex >= 0 && sorted[gap.rightIndex].reversed);
 }
 
+// Material missing INSIDE an inverted segment: the record lists two reversed pieces of the strand one after the other, the second lying wholly below
+// the first, so the inverted reading carries on across the gap, e.g. 2/0/130, 2/190/175, 2/165/130, 2/190/258.1. Scored as a complex genomic
+// rearrangement (see gapInsideRearrangedSegment()); the drawing puts one chevron over the whole inverted segment, on top of the white gap.
+inline bool recordHasGapInsideInvertedSegment(const SDRdataRecord& record, int oldStrandID, double gapStart, double gapEnd, double tolerance)
+{
+    if (!record.linear)
+    {
+        return false;
+    }
+
+    for (std::size_t k = 0; k + 1 < record.fragments.size(); ++k)
+    {
+        const SDRfragment& upper = record.fragments[k];				// Listed first, read from high to low
+        const SDRfragment& lower = record.fragments[k + 1];
+
+        if (upper.oldStrandID == oldStrandID && lower.oldStrandID == oldStrandID
+            && upper.oldStartPosition > upper.oldEndPosition && lower.oldStartPosition > lower.oldEndPosition
+            && approxEqual(upper.oldEndPosition, gapEnd, tolerance) && approxEqual(lower.oldStartPosition, gapStart, tolerance))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Joins consecutive reversed pieces of one strand whose inverted reading carries on (the next piece lies wholly below the previous one, touching it
+// or across a gap) into one reversed piece covering the whole inverted segment. Used by the drawing to find the extent of an inversion with a gap inside.
+inline std::vector<SDRfragment> joinInvertedPiecesAcrossGaps(const std::vector<SDRfragment>& fragments, double tolerance)
+{
+    std::vector<SDRfragment> joined;
+
+    for (const SDRfragment& fragment : fragments)
+    {
+        if (!joined.empty())
+        {
+            SDRfragment& previous = joined.back();
+
+            if (previous.oldStrandID == fragment.oldStrandID
+                && previous.oldStartPosition > previous.oldEndPosition && fragment.oldStartPosition > fragment.oldEndPosition
+                && fragment.oldStartPosition <= previous.oldEndPosition + tolerance)
+            {
+                previous.oldEndPosition = fragment.oldEndPosition;
+                previous.hasCentromere = previous.hasCentromere || fragment.hasCentromere;
+                continue;
+            }
+        }
+
+        joined.push_back(fragment);
+    }
+
+    return joined;
+}
+
 // What (if anything) the material missing from a gap turned into elsewhere in the cell.
 enum class SDRgapPartner
 {
@@ -3347,6 +3401,58 @@ inline bool hasShatteredExchangedMaterial(const SDRdataRecord& record)
 }
 
 
+// True if a record has material missing INSIDE a rearranged segment: two consecutive pieces of one strand whose reading carries on across a gap
+// of 100+ bases (not touching), either both inverted (reading downwards, see recordHasGapInsideInvertedSegment()) or both forward and translocated
+// (the strand has no centromere in this record while another strand's centromere is in it), e.g. 5/0/120/1, 6/160/175.1, 6/175.2/181.8. A deletion
+// or an ecDNA cut from inside an inversion or a translocated segment is scored as a complex genomic rearrangement (Samy, 2026-11-09).
+inline bool hasGapInsideRearrangedSegment(const SDRdataRecord& record)
+{
+    if (!record.linear)
+    {
+        return false;
+    }
+
+    const double tolerance = svToleranceMbp;
+    std::set<int> centromereStrands;
+
+    for (const SDRfragment& fragment : record.fragments)
+    {
+        if (fragment.hasCentromere)
+        {
+            centromereStrands.insert(fragment.oldStrandID);
+        }
+    }
+
+    for (std::size_t k = 0; k + 1 < record.fragments.size(); ++k)
+    {
+        const SDRfragment& first = record.fragments[k];
+        const SDRfragment& second = record.fragments[k + 1];
+
+        if (first.oldStrandID != second.oldStrandID)
+        {
+            continue;
+        }
+
+        const bool firstReversed = first.oldStartPosition > first.oldEndPosition;
+        const bool secondReversed = second.oldStartPosition > second.oldEndPosition;
+
+        if (firstReversed && secondReversed && second.oldStartPosition < first.oldEndPosition && !approxEqual(second.oldStartPosition, first.oldEndPosition, tolerance))
+        {
+            return true;							// Gap inside an inverted segment
+        }
+
+        const bool translocated = !centromereStrands.empty() && !centromereStrands.count(first.oldStrandID);
+
+        if (translocated && !firstReversed && !secondReversed && second.oldStartPosition > first.oldEndPosition && !approxEqual(second.oldStartPosition, first.oldEndPosition, tolerance))
+        {
+            return true;							// Gap inside a translocated segment
+        }
+    }
+
+    return false;
+}
+
+
 // Same underlying strand-connectivity graph as detectChromoplexy(), built from raw fragment data, so clustering doesn't depend on any named mutation shape. Components of
 // size 3+ are skipped (chromoplexy's territory). For components of size 1 or 2, rather than counting named detected mutation events , this counts the TOTAL 
 // number of data-field-3 fragments across every rearranged record touching the cluster's strand(s), a direct measure of how many
@@ -3486,6 +3592,7 @@ inline std::vector<SDRchromothripsisEvent> detectShatteredClusters(const SDRsubH
 
         bool hasShatteredExchange = false;					// Exchanged material between two chromosomes broke and was rearranged
         bool hasNonSequentialRecord = false;					// 4+ pieces of one chromosome out of their original order
+        bool hasGapInRearrangedSegment = false;				// A deletion or ecDNA cut from inside an inverted or translocated segment
 
         for (const SDRdataRecord& record : subHeader.dataRecords)
         {
@@ -3496,13 +3603,14 @@ inline std::vector<SDRchromothripsisEvent> detectShatteredClusters(const SDRsubH
 
             hasShatteredExchange = hasShatteredExchange || hasShatteredExchangedMaterial(record);
             hasNonSequentialRecord = hasNonSequentialRecord || isNonSequentialRearrangement(record);
+            hasGapInRearrangedSegment = hasGapInRearrangedSegment || hasGapInsideRearrangedSegment(record);
         }
 
 	// Min fragment count = 10 by default, function argument parameter can be changed. Only the fragment count makes chromothripsis.
         const bool isChromothripsis = totalFragmentCount >= minFragmentCount;
 
 	// Safeguard: a cluster that is already chromothripsis is never also a complex genomic rearrangement, so the two counts never overlap.
-        const bool isComplexRearrangement = !isChromothripsis && (hasNonSequentialRecord || hasShatteredExchange);
+        const bool isComplexRearrangement = !isChromothripsis && (hasNonSequentialRecord || hasShatteredExchange || hasGapInRearrangedSegment);
 
         if (complexRearrangements ? !isComplexRearrangement : !isChromothripsis)
         {
@@ -3530,7 +3638,8 @@ inline std::vector<SDRchromothripsisEvent> detectChromothripsis(const SDRsubHead
 
 
 // Complex genomic rearrangement: a 1-2 strand cluster below the chromothripsis fragment threshold with a record of 4+ pieces of one chromosome
-// out of their original order, or with shattered exchanged material between chromosomes (see detectShatteredClusters()). It silences simpler events on its strands, like chromothripsis.
+// out of their original order, shattered exchanged material between chromosomes, or material missing inside an inverted or translocated segment
+// (see detectShatteredClusters(), hasGapInsideRearrangedSegment()). It silences simpler events on its strands, like chromothripsis.
 inline std::vector<SDRcomplexRearrangementEvent> detectComplexGenomicRearrangements(const SDRsubHeader& subHeader, int numOriginalStrands, int minFragmentCount)
 {
     return detectShatteredClusters(subHeader, numOriginalStrands, minFragmentCount, true);

@@ -1111,14 +1111,25 @@ void Karyogram::drawPaintedFragment(			// Function to draw the individual fragme
     // Inversion chevrons, drawn in their own pass after every fill (and white-gap padding) so no neighbouring segment can paint over them. Each chevron is black and spans the
     // full height of its inverted segment and the full width of the chromosome, so a short inversion gives a flatter and flatter arrow, ending as a single horizontal line.
     // Still inside the capsule clip, so the arm ends are trimmed to the chromosome outline.
-    for (const PaintedSegment& segment : segments)
+    // A long deletion inside an inverted segment (reversed piece, white gap, reversed piece) gets ONE chevron over the whole segment, drawn on top of the white gap.
+    for (std::size_t i = 0; i < segments.size(); ++i)
     {
+        const PaintedSegment& segment = segments[i];
+
         if (!segment.isReversed || isWhiteColor(segment.color))
         {
             continue;
         }
 
-        drawInversionChevron(cr, x + width / 2.0, y + height * segment.startFraction, y + height * segment.endFraction, width);
+        double endFraction = segment.endFraction;
+
+        while (i + 2 < segments.size() && segments[i + 1].insideInversion && segments[i + 2].isReversed && !isWhiteColor(segments[i + 2].color))
+        {
+            i += 2;
+            endFraction = segments[i].endFraction;
+        }
+
+        drawInversionChevron(cr, x + width / 2.0, y + height * segment.startFraction, y + height * endFraction, width);
     }
 
     cairo_restore(cr);
@@ -1899,6 +1910,24 @@ std::vector<PaintedSegment> Karyogram::buildDeletionRemainingSegments(
     }
 
 
+    // Only a balanced inversion (not reaching either chromosome end) is drawn as one chevron across a deletion inside it; a terminal one keeps a chevron per piece.
+    const std::vector<SDRfragment> joinedInversions = joinInvertedPiecesAcrossGaps(record.fragments, delTolerance);
+    auto insideTerminalInversion = [&](double gapStart, double gapEnd)
+    {
+        for (const SDRfragment& fragment : joinedInversions)
+        {
+            const double low = std::min(fragment.oldStartPosition, fragment.oldEndPosition);
+            const double high = std::max(fragment.oldStartPosition, fragment.oldEndPosition);
+
+            if (fragment.oldStrandID == homeOldStrandID && low <= gapStart && gapEnd <= high)
+            {
+                return approxEqual(low, 0.0, delTolerance) || approxEqual(high, originalSizeMbp, delTolerance);
+            }
+        }
+        return false;
+    };
+
+
     // Draw central white gaps for central deleted segments
     for (std::size_t i = 0; i < fragments.size(); i++)
     {
@@ -1919,6 +1948,8 @@ std::vector<PaintedSegment> Karyogram::buildDeletionRemainingSegments(
                 gapSegment.color = RGB{1.0, 1.0, 1.0};
                 gapSegment.isReversed = false;
                 gapSegment.hasCentromere = false;
+                gapSegment.insideInversion = recordHasGapInsideInvertedSegment(record, homeOldStrandID, gapStart, gapEnd, delTolerance)
+                                             && !insideTerminalInversion(gapStart, gapEnd);
                 segments.push_back(gapSegment);
             }
         }

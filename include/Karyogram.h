@@ -31,6 +31,7 @@ struct PaintedSegment
     bool isSecondHomolog;                       // Fragment came from the second homolog: its stretch of chromosome outline is dashed. White gaps inherit from a neighbour.
     double centromereStartFraction;
     double centromereEndFraction;
+    bool insideInversion = false;               // White gap of a long deletion inside an inverted segment: one chevron spans the reversed pieces on both sides of it
 };
 
 
