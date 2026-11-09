@@ -3049,9 +3049,16 @@ std::vector<const SDRdataRecord*> Karyogram::clusterRecordsForDrawing(
     std::vector<SDRdataRecord>& mergedStorage,
     const SDRmasterHeader& masterHeader)
 {
-    if (records.size() <= 1)
+    // Nothing to merge. Built element by element rather than copied with "return records;": GCC 12-14 at -O2 wrongly
+    // warns (-Warray-bounds) that copying a vector known to hold at most one pointer reads past its end.
+    if (records.empty())
     {
-        return records;
+        return {};
+    }
+
+    if (records.size() == 1)
+    {
+        return {records.front()};
     }
 
     const SDRdataRecord* gapRemainingRecord = nullptr;
