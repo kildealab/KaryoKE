@@ -1,6 +1,6 @@
 # KaryoKE v1.2 - <ins>Karyo</ins>grams for <ins>K</ins>aryotype <ins>E</ins>rrors
 <p align = "center">
-<img src="KaryoKE_logo.svg" alt="KaryoKE logo">
+<img src="images/KaryoKE_logo.svg" alt="KaryoKE logo">
 </p>
 
 
@@ -193,7 +193,7 @@ The data block is summarized under the subsection 'Chromosome Damages', where th
 
 ### WHAT IS PLOTTED IN THE SDD FILE KARYOGRAM:
 <p align = "center">
-<img src="karyogram_evolution_SDD.gif" alt="Secondary electrons from 6 MeV photons at different doses"><br>
+<img src="images/karyogram_evolution_SDD.gif" alt="Secondary electrons from 6 MeV photons at different doses"><br>
 <em> Increasing DNA damages as a function of dose resulting from secondary electrons of a primary 6 MeV photon beam.</em>
 </p>
 
@@ -283,7 +283,7 @@ present to indicate it is a derivative, not an original chromosome strand. (see 
 Note: the multi-foreign-fragment ecDNA are depicted pie-chart style, to represent 'how much' of each original chromosome is present in the new ecDNA fragment. 
 
 <picture align = "center">
-<img src="./SDR_karyogram.svg" width = "100%" alt="Different mutation representations from irradiated DNA"><br>
+<img src="images/SDR_karyogram.svg" width = "100%" alt="Different mutation representations from irradiated DNA"><br>
 <em> Depicting common DNA structural variations that arise from ionizing radiation.</em>
 </picture>
 
