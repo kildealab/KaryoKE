@@ -1,6 +1,6 @@
 # KaryoKE v1.2 - <ins>Karyo</ins>grams for <ins>K</ins>aryotype <ins>E</ins>rrors
 <p align = "center">
-<img src="images/KaryoKE_logo.svg" alt="KaryoKE logo" width="300">
+<img src="images/KaryoKE_logo.svg" alt="KaryoKE logo" width="500">
 </p>
 
 
