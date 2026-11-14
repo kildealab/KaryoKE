@@ -115,7 +115,8 @@ RGB Karyogram::getColorForOriginalStrand(
     const int yStrandID = chromosomeCount - 1; 								// Assumes Y is listed second last (1-indexed)
     const int xStrandID = chromosomeCount;								// Assumes X is listed last (1-indexed)
 
-    int group = oldStrandID;                    							// Default is non-homologous layout, every strand gets their own color
+    // Strand IDs are 1-indexed, color groups are 0-indexed like the SDD karyogram (chromosome 1 = group 0), so both karyograms use the same colors.
+    int group = oldStrandID - 1;                    							// Default is non-homologous layout, every strand gets their own color
 
     // Determine the color associated according to a given chromosome/homolog group.
     if(oldStrandID == yStrandID)
@@ -128,7 +129,7 @@ RGB Karyogram::getColorForOriginalStrand(
     }
     else if (layout == ChromosomeLayout::SPLIT_HOMOLOGS && homologousPairs > 0)
     {
-        group = oldStrandID % homologousPairs;
+        group = (oldStrandID - 1) % homologousPairs;			// Account for 1-indexing with the -1
     }
     else if (layout == ChromosomeLayout::ADJACENT_HOMOLOGS && homologousPairs > 0)
     {
