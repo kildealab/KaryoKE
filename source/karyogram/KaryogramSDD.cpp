@@ -3,6 +3,7 @@
 #include <cmath>
 #include <string>
 #include <algorithm>
+#include <vector>
 
 #include "Karyogram.h"
 #include "SDDutilities.h"
@@ -355,8 +356,7 @@ bool Karyogram::renderSDDkaryogram(                                           //
                 const double posX2 = groupCenterX + chromatidGap / 2.0;
 
                 // Draw both chromatids of the chromosome in their respective X positions.
-                drawChromosome(cr, posX, posY, chromosomeHeight, chromosomeWidth, chromosomeColor, centromereStart, centromereEnd);
-                drawChromosome(cr, posX2, posY, chromosomeHeight, chromosomeWidth, chromosomeColor, centromereStart, centromereEnd);
+                drawReplicatedChromosome(cr, posX, posY, chromosomeHeight, chromosomeWidth, chromatidGap, chromosomeColor, centromereStart, centromereEnd);
 
                 // Both chromatids in the non-homologous case are assigned the same chromosome ID, it is just in the post-replicated cell phase, so there are two.
                 chromosomeGeometry.push_back({static_cast<int>(firstIndex), 1, posX, posY, chromosomeHeight});
@@ -484,13 +484,11 @@ bool Karyogram::renderSDDkaryogram(                                           //
 
 
                 // Draw homolog 1 chromatids at the desired locations with the desired dimensions
-                drawChromosome(cr, leftChromatid1PosX, posY, firstHeight, chromosomeWidth, chromosomeColor, firstCentromereStart, firstCentromereEnd);
-                drawChromosome(cr, leftChromatid2PosX, posY, firstHeight, chromosomeWidth, chromosomeColor, firstCentromereStart, firstCentromereEnd);
+                drawReplicatedChromosome(cr, leftChromatid1PosX, posY, firstHeight, chromosomeWidth, chromatidGap, chromosomeColor, firstCentromereStart, firstCentromereEnd);
 
 
                 // Draw homolog 2 chromatids at the desired locations with the desired dimensions
-                drawChromosome(cr, rightChromatid1PosX, posY, secondHeight, chromosomeWidth, chromosomeColor, secondCentromereStart, secondCentromereEnd, true);
-                drawChromosome(cr, rightChromatid2PosX, posY, secondHeight, chromosomeWidth, chromosomeColor, secondCentromereStart, secondCentromereEnd, true);
+                drawReplicatedChromosome(cr, rightChromatid1PosX, posY, secondHeight, chromosomeWidth, chromatidGap, chromosomeColor, secondCentromereStart, secondCentromereEnd, true);
 
                 // Store actual SDD chromosome IDs with their corresponding dimensions and locations --> for damage marker drawings later on
                 chromosomeGeometry.push_back({static_cast<int>(firstIndex), 1, leftChromatid1PosX, posY, firstHeight});
@@ -625,15 +623,13 @@ bool Karyogram::renderSDDkaryogram(                                           //
         const double yChromatid2PosX = yGroupCenterX + chromatidGap / 2.0;
 
         // Draw X chromatids 1 and 2
-        drawChromosome(cr, xChromatid1PosX, sexChromPosY, xHeight, chromosomeWidth, xColor, xCentromereStart, xCentromereEnd);
-        drawChromosome(cr, xChromatid2PosX, sexChromPosY, xHeight, chromosomeWidth, xColor, xCentromereStart, xCentromereEnd);
+        drawReplicatedChromosome(cr, xChromatid1PosX, sexChromPosY, xHeight, chromosomeWidth, chromatidGap, xColor, xCentromereStart, xCentromereEnd);
         // Store X chromatids 1 and 2 geometries for damage drawing
         chromosomeGeometry.push_back({chromosomeCount, 1, xChromatid1PosX, sexChromPosY, xHeight});
         chromosomeGeometry.push_back({chromosomeCount, 2, xChromatid2PosX, sexChromPosY, xHeight});
 
         // Draw Y chromatids 1 and 2
-        drawChromosome(cr, yChromatid1PosX, sexChromPosY, yHeight, chromosomeWidth, yColor, yCentromereStart, yCentromereEnd);
-        drawChromosome(cr, yChromatid2PosX, sexChromPosY, yHeight, chromosomeWidth, yColor, yCentromereStart, yCentromereEnd);
+        drawReplicatedChromosome(cr, yChromatid1PosX, sexChromPosY, yHeight, chromosomeWidth, chromatidGap, yColor, yCentromereStart, yCentromereEnd);
 
         // Store Y chromatids 1 and 2 geometries for damage drawing
         chromosomeGeometry.push_back({chromosomeCount - 1, 1, yChromatid1PosX, sexChromPosY, yHeight});
@@ -950,6 +946,158 @@ void Karyogram::drawChromosome(
 
     cairo_fill(cr);
 
+}
+
+
+
+
+// Draws a post-replicated chromosome: two sister chromatids that share ONE centromere. Each chromatid is pinched sharply on its outer side at the
+// centromere, over a taller region than a single chromatid, while its inner side (facing its sister) stays straight and just meets the sister at
+// the centromere, so the pair reads as one X-shaped replicated chromosome. A single gray centromere ellipse spans both chromatids where they join. Each chromatid keeps the same
+// rectangle (x, width) as before, so damage markers placed from chromosomeGeometry still land on the right sister.
+void Karyogram::drawReplicatedChromosome(
+    cairo_t* cr,
+    double x,                                           // Pixel X coordinate of the left edge of the first sister chromatid
+    double y,                                           // Pixel Y coordinate of the top of both chromatids
+    double height,                                      // Scaled chromosome pixel height
+    double width,                                       // Width of ONE chromatid in pixels
+    double chromatidGap,                                // Gap between the two sister chromatids along the arms, in pixels
+    RGB color,                                          // Associated chromosome color
+    double centromereStart,                             // Centromere start location as fraction of the chromosome length from p arm to q arm
+    double centromereEnd,                               // Centromere end location as fraction of the chromosome length from p arm to q arm
+    bool dashedOutline)                                 // Second homologs get a dashed outline so they can be told apart from the first homolog (same color).
+{
+    const double capRadius = width / 2.0;
+    const double centromereY = y + height * (centromereStart + centromereEnd) / 2.0;
+
+    // Constriction shape: starts higher up (taller) than on a single chromatid, and is deeper on the inner side.
+    const double constrictionHalfHeight = std::clamp(0.15 * height + 6.0, 8.0, 24.0);	// Half of the pinched region, in pixels
+    const double outerCut = 7.0;                        // How far the outer side moves in at the centromere, the sharp pinch that gives the X shape
+    const double innerCut = -chromatidGap / 2.0;        // Inner side does not pinch: it bulges slightly so the sisters touch at the centromere
+    const double minimumHalfWidth = 2.5;                // Never pinch a chromatid thinner than this, also near the tips of acrocentric chromosomes
+
+    // Smooth bump: 1 at the centromere, falling to 0 at +/- constrictionHalfHeight with a cosine profile (no sharp corners).
+    const auto pinch = [&](double py) -> double
+    {
+        const double t = std::abs(py - centromereY) / constrictionHalfHeight;
+        if (t >= 1.0)
+        {
+            return 0.0;
+        }
+        return 0.5 * (1.0 + std::cos(M_PI * t));
+    };
+
+    // Rows along the chromatid from top tip to bottom tip: dense near the round caps, every half pixel along the straight part.
+    std::vector<double> rows;
+    for (int step = 0; step <= 45; ++step)
+    {
+        rows.push_back(y + capRadius - capRadius * std::cos(step * M_PI / 90.0));
+    }
+    for (double py = y + capRadius + 0.5; py < y + height - capRadius; py += 0.5)
+    {
+        rows.push_back(py);
+    }
+    for (int step = 45; step >= 0; --step)
+    {
+        rows.push_back(y + height - capRadius + capRadius * std::cos(step * M_PI / 90.0));
+    }
+
+    // Half width of a plain rounded chromatid at height py (narrower inside the round caps).
+    const auto capsuleHalfWidth = [&](double py) -> double
+    {
+        double dy = 0.0;
+        if (py < y + capRadius)
+        {
+            dy = (y + capRadius) - py;
+        }
+        else if (py > y + height - capRadius)
+        {
+            dy = py - (y + height - capRadius);
+        }
+        return std::sqrt(std::max(0.0, capRadius * capRadius - dy * dy));
+    };
+
+    // Trace one chromatid outline. innerOnRight is true for the left sister (its inner side faces right).
+    const auto traceChromatid = [&](double left, bool innerOnRight)
+    {
+        const double centerX = left + capRadius;
+        const double leftCut = innerOnRight ? outerCut : innerCut;
+        const double rightCut = innerOnRight ? innerCut : outerCut;
+
+        cairo_new_path(cr);
+
+        // Right side, top to bottom
+        for (size_t i = 0; i < rows.size(); ++i)
+        {
+            const double py = rows[i];
+            const double halfWidth = capsuleHalfWidth(py);
+            const double rightX = centerX + std::max(std::min(halfWidth, minimumHalfWidth), halfWidth - rightCut * pinch(py));
+            if (i == 0)
+            {
+                cairo_move_to(cr, rightX, py);
+            }
+            else
+            {
+                cairo_line_to(cr, rightX, py);
+            }
+        }
+
+        // Left side, bottom to top
+        for (size_t i = rows.size(); i-- > 0;)
+        {
+            const double py = rows[i];
+            const double halfWidth = capsuleHalfWidth(py);
+            const double leftX = centerX - std::max(std::min(halfWidth, minimumHalfWidth), halfWidth - leftCut * pinch(py));
+            cairo_line_to(cr, leftX, py);
+        }
+
+        cairo_close_path(cr);
+
+        cairo_set_source_rgb(cr, color.r, color.g, color.b);
+        cairo_fill_preserve(cr);
+
+        cairo_set_source_rgb(cr, 0.1, 0.1, 0.1);
+        cairo_set_line_width(cr, 1.5);
+        cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+
+        if (dashedOutline)
+        {
+            const double dashPattern[2] = { 4.0, 3.0 };
+            cairo_set_dash(cr, dashPattern, 2, 0.0);
+        }
+
+        cairo_stroke(cr);
+
+        if (dashedOutline)
+        {
+            cairo_set_dash(cr, nullptr, 0, 0.0);              // Back to solid for everything drawn afterwards
+        }
+    };
+
+    traceChromatid(x, true);                                    // First sister chromatid (left)
+    traceChromatid(x + width + chromatidGap, false);            // Second sister chromatid (right)
+
+    // -----------------------------------------
+    // One shared centromere joining the sisters
+    // -----------------------------------------
+    // An ellipse centred where the two sisters touch, spanning the combined width of both chromatids at the constriction (plus 1 px each side,
+    // like the single-chromatid centromere), with its height scaled by the centromere span as on single chromatids.
+
+    const double centromereStartY = y + height * centromereStart;
+    const double centromereEndY = y + height * centromereEnd;
+    const double ellipseCenterX = x + width + chromatidGap / 2.0;
+    const double ellipseCenterY = (centromereStartY + centromereEndY) / 2.0;
+    const double ellipseWidth = 2.0 * (width - outerCut) + chromatidGap + 2.0;
+    const double ellipseHeight = std::max(5.0, centromereEndY - centromereStartY);
+
+    cairo_save(cr);
+    cairo_translate(cr, ellipseCenterX, ellipseCenterY);
+    cairo_scale(cr, ellipseWidth / 2.0, ellipseHeight / 2.0);
+    cairo_arc(cr, 0.0, 0.0, 1.0, 0.0, 2.0 * M_PI);
+    cairo_restore(cr);
+
+    cairo_set_source_rgb(cr, 0.6, 0.6, 0.6);               // Gray centromere, same as on single chromatids
+    cairo_fill(cr);
 }
 
 

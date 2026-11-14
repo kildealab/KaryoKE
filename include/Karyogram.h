@@ -155,6 +155,9 @@ private:
 
     // The main draw chromosome function, accounting for individual chromosome sizes and centromere ranges and locations.
     void drawChromosome(cairo_t* cr, double x, double y, double height, double width, RGB color, double centromereStart, double centromereEnd, bool dashedOutline = false);
+    // Post-replication (SDD): two sister chromatids side by side that share one centromere, pinched sharply on their outer sides (X shape), like a real replicated chromosome.
+    // x is the left edge of the first chromatid; the second starts at x + width + chromatidGap.
+    void drawReplicatedChromosome(cairo_t* cr, double x, double y, double height, double width, double chromatidGap, RGB color, double centromereStart, double centromereEnd, bool dashedOutline = false);
     // The main draw mutated chromosome function, accounting additionally for foreign segments with different colors, inversion markers, white deletion segments.
     void drawPaintedFragment(cairo_t* cr, double x, double y, double height, double width, const std::vector<PaintedSegment>& segments, bool roundTopCap = true, bool roundBottomCap = true, bool drawOutline = true);
     std::vector<PaintedSegment> applyMinimumSegmentHeight(const std::vector<PaintedSegment>& segments, double height, double minPixels);	// Keeps tiny segments at least minPixels tall
