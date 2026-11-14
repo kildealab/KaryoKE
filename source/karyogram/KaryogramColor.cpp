@@ -24,7 +24,9 @@ RGB Karyogram::generateChromosomeColor(
     double hue = std::fmod(chromosomeNumber * goldenRatio, 1.0);
 */
 
-    const double hue = static_cast<double>(chromosomeNumber) / static_cast<double>(totalChromosomes);		// Generate N different equally spaced colors for N chromosomes.
+    const double hueOffset = 0; 		// 0 = red start, 0.78 = purple start
+
+    const double hue = std::fmod(static_cast<double>(chromosomeNumber) / static_cast<double>(totalChromosomes) + hueOffset, 1.0);		// Generate N different equally spaced colors for N chromosomes.
 
     const double saturation = 0.70;
     const double value = 0.90;
