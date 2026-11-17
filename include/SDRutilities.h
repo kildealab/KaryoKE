@@ -191,8 +191,9 @@ inline SDRsubHeader orientRecordsToHomeStrand(const SDRsubHeader& subHeader, int
         }
 
         auto middle = [](const SDRfragment* fragment) { return (fragment->oldStartPosition + fragment->oldEndPosition) / 2.0; };
+        const bool readsFromTop = homePieces.size() >= 2 && middle(homePieces.front()) > middle(homePieces.back());
 
-        if (homePieces.size() < 2 || middle(homePieces.front()) <= middle(homePieces.back()))
+        if (!readsFromTop)
         {
             continue;
         }
@@ -2599,7 +2600,10 @@ inline std::vector<SDRecDNAevent> detectECDNA(const SDRsubHeader& subHeader, int
         for (auto& [newStrandID, fragments] : groupNewStrand)
         {
 
-	    if (fragments.size() != newStrandIDtotalFragments[newStrandID]) // Reject if this record has fragments from OTHER old strands too.
+	    // Reject if this record has fragments from OTHER old strands too, unless it is a linear record holding two or more pieces of this strand around the
+	    // gap: the chromosome may also have exchanged an end with another chromosome (Samy, 2026-11-17, e.g. 3/0/102.547006, 3/104.154719/212.098566/1,
+	    // 4/1.792006/0 with the circle 3/102.547006/104.154719 is an ecDNA formation plus a balanced translocation).
+	    if (fragments.size() != newStrandIDtotalFragments[newStrandID] && !(recordByNewStrand[newStrandID]->linear && fragments.size() >= 2))
             {
                 continue;
             }
