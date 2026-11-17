@@ -218,6 +218,16 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& rawSubHeader, int numOrigin
     std::map<std::pair<int, std::size_t>, std::size_t> insertionOnlySites;		// {newStrandID, index of the piece after the site in the cleaned record} -> its insertion-only indel
     std::map<int, std::vector<std::pair<double, double>>> smallInversions;		// Per strand, the stretches flipped in place by a small inversion (not indels)
 
+    // INDELS AT STRUCTURAL-VARIATION BREAKPOINTS ARE CONSUMED (Samy, 2026-11-17): an indel is scored only when it is not part of a larger structural variation.
+    // Bases lost (1-99) or inserted where the reading does not simply carry on along the same strand (an inversion's ends, a translocation junction, the ends of
+    // a deletion or of an excised ecDNA, around a moved piece, either side of a small inversion) belong to that structural variation and are not counted. They
+    // are still cleaned away (and their excised pieces taken out), so the detectors see a clean break. Exception: deleted bases that formed their own small
+    // circle (< 100 bp ecDNA) stay an indel wherever they were cut from, since real ecDNA cannot form from so little material.
+    auto isCircularRecord = [&](int newStrandID)
+    {
+        return std::any_of(subHeader.dataRecords.begin(), subHeader.dataRecords.end(), [&](const SDRdataRecord& r) { return r.newStrandID == newStrandID && !r.linear; });
+    };
+
     // MOVED small pieces (Samy, 2026-11-17): the 100 bp threshold applies only to copy-number-altering mutations, so balanced rearrangements of small pieces
     // are not indels:
     //  - a small reciprocal exchange between two chromosomes (each receives a < 100 bp piece cut out of the other) is a balanced translocation of any size;
@@ -465,7 +475,7 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& rawSubHeader, int numOrigin
                 const double gapLow = std::min(before.oldEndPosition, after.oldStartPosition);
                 const double gapHigh = std::max(before.oldEndPosition, after.oldStartPosition);
 
-                // 1-99 bases lost at either breakpoint are an indel deletion each, on top of the balanced inversion (Samy, 2026-11-17).
+                // Up to 99 bases may be lost at either breakpoint (Samy, 2026-11-17).
                 const double pieceLow = std::min(piece.oldStartPosition, piece.oldEndPosition);
                 const double pieceHigh = std::max(piece.oldStartPosition, piece.oldEndPosition);
                 const long long lostBelow = basesBetween(gapLow, pieceLow) - 1;
@@ -475,16 +485,7 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& rawSubHeader, int numOrigin
                     && !isIndelSizedFragment(before) && !isIndelSizedFragment(after)
                     && lostBelow >= -1 && lostBelow <= indelMaxBases && lostAbove >= -1 && lostAbove <= indelMaxBases)
                 {
-                    if (indels && lostBelow > 0)
-                    {
-                        indels->push_back({piece.oldStrandID, record.newStrandID, gapLow, static_cast<int>(lostBelow), 0, -1});
-                    }
-
-                    if (indels && lostAbove > 0)
-                    {
-                        indels->push_back({piece.oldStrandID, record.newStrandID, pieceHigh, static_cast<int>(lostAbove), 0, -1});
-                    }
-
+                    // Bases lost at its breakpoints are part of the inversion, not indels (consumed, see above).
                     kept.push_back(piece);
                     kept.push_back(after);
                     smallInversions[piece.oldStrandID].emplace_back(gapLow, gapHigh);
@@ -581,6 +582,8 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& rawSubHeader, int numOrigin
                 }
             }
 
+            bool indelCounted = false;
+
             if (joinable || insertion || breakpointLostBases > 0)
             {
                 int excisedStrandID = -1;
@@ -596,10 +599,13 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& rawSubHeader, int numOrigin
                     }
                 }
 
-                if (indels)
+                // Only a site where the reading carries on along the same strand is an indel on its own; anything else is a breakpoint of a structural
+                // variation and consumed by it, unless its deleted bases formed a small circle (see above).
+                if (indels && (joinable || (excisedStrandID != -1 && isCircularRecord(excisedStrandID))))
                 {
                     indels->push_back({left.oldStrandID, record.newStrandID, left.oldEndPosition, static_cast<int>(joinable ? deletedBases : breakpointLostBases),
-                                       static_cast<int>(insertedBases), excisedStrandID});
+                                       static_cast<int>(joinable ? insertedBases : 0), excisedStrandID});
+                    indelCounted = true;
                 }
             }
 
@@ -613,7 +619,7 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& rawSubHeader, int numOrigin
             {
                 kept.push_back(right);
 
-                if (insertion && breakpointLostBases == 0 && record.linear && indels)	// Bases lost at this junction may be found between records below: same site
+                if (insertion && breakpointLostBases == 0 && record.linear && indels && indelCounted)	// Bases lost at this junction may be found between records below: same site
                 {
                     insertionOnlySites[{record.newStrandID, kept.size() - 1}] = indels->size() - 1;
                 }
@@ -713,7 +719,8 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& rawSubHeader, int numOrigin
                     excisedRecordIDs.insert(excisedStrandID);
                 }
 
-                if (!indels)
+                // Lost at a breakpoint between records: consumed by that structural variation, unless the bases formed a small circle (see above).
+                if (!indels || excisedStrandID == -1 || !isCircularRecord(excisedStrandID))
                 {
                     continue;
                 }
