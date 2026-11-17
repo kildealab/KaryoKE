@@ -501,8 +501,31 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
 	    // Adjust slot width to account for drawing of deleted segments and ecDNA beside the original chromosomes
             const double leftStackWidth = computeSlotWidth(leftRecords, firstOldStrandID, chromosomeWidth, maxLengthMbp, maxRenderHeight, masterHeader, leftColumn2Width);
             const double rightStackWidth = computeSlotWidth(rightRecords, secondOldStrandID, chromosomeWidth, maxLengthMbp, maxRenderHeight, masterHeader, rightColumn2Width);
-            const double leftSlotCenterX = groupCenterX - leftStackWidth / 2.0 - homologGap / 2.0;
-            const double rightSlotCenterX = groupCenterX + rightStackWidth / 2.0 + homologGap / 2.0;
+            double leftSlotCenterX = groupCenterX - leftStackWidth / 2.0 - homologGap / 2.0;
+            double rightSlotCenterX = groupCenterX + rightStackWidth / 2.0 + homologGap / 2.0;
+
+            // Moved-segment arrows are drawn on the LEFT of a chromosome, so on the second homolog they reach into the gap towards the first homolog and
+            // its circles (Samy, 2026-11-17). The second homolog is drawn once off-screen to measure how far its drawing reaches left of its slot, and the
+            // gap is widened by that much, so the arrows keep the usual homologGap from the first homolog's slot, like the first homolog's circles do.
+            if (!rightRecords.empty())
+            {
+                cairo_surface_t* probeSurface = cairo_recording_surface_create(CAIRO_CONTENT_COLOR_ALPHA, nullptr);
+                cairo_t* probe = cairo_create(probeSurface);
+                drawStackedMutations(probe, rightRecords, rightSlotCenterX, posY, chromosomeWidth, maxLengthMbp, maxRenderHeight, humanGenome, masterHeader, secondOldStrandID);
+                cairo_destroy(probe);
+
+                double inkX = 0.0, inkY = 0.0, inkWidth = 0.0, inkHeight = 0.0;
+                cairo_recording_surface_ink_extents(probeSurface, &inkX, &inkY, &inkWidth, &inkHeight);
+                cairo_surface_destroy(probeSurface);
+
+                const double overhang = (rightSlotCenterX - rightStackWidth / 2.0) - inkX;	// How far the drawing reaches left of the slot
+
+                if (inkWidth > 0.0 && overhang > 2.0)					// Outlines alone stick out about a pixel; only arrows reach further
+                {
+                    leftSlotCenterX -= overhang / 2.0;
+                    rightSlotCenterX += overhang / 2.0;
+                }
+            }
 
 	    // After checking for the presence of long deletions and ecDNA drawn beside the original chromosomes, draw them for the left and right homologs.
 	    // And draw other mutations stacked on top of the original intact chromosome
