@@ -121,6 +121,7 @@ struct SDRecDNAevent
     std::vector<std::pair<double, double>> ecDNAsegments; 	// One or more (start, end) segments making up this ecDNA formation (one molecule, or several when one deleted segment shattered into several circles)
     std::vector<int> remainingStrandIDs;			// New strand ID of the strand that lost the excised fragment
     int excisedStrandID;					// New strand ID of the excised strand (the first circle when there are several)
+    bool severalCircles = false;				// One deleted segment gave 2+ circular records: scored as a complex genomic rearrangement, not ecDNA (still drawn)
 };
 
 

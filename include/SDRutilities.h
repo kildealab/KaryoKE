@@ -2777,6 +2777,7 @@ inline std::vector<SDRecDNAevent> detectECDNA(const SDRsubHeader& subHeader, int
                 event.ecDNAsegments.insert(event.ecDNAsegments.end(), matchedSegments.begin(), matchedSegments.end());
                 event.remainingStrandIDs.insert(event.remainingStrandIDs.end(), matchedSegments.size(), remainingStrandID);
                 eventOrigins[sameDeletion].insert(matchedOrigins.begin(), matchedOrigins.end());
+                event.severalCircles = true;
                 continue;
             }
 
@@ -2902,6 +2903,13 @@ inline std::vector<SDRecDNAevent> detectECDNA(const SDRsubHeader& subHeader, int
 
         ecDNAevents.erase(std::remove_if(ecDNAevents.begin(), ecDNAevents.end(), [&](const SDRecDNAevent& e)
         {
+            // One deleted segment that gave two or more circular records (each circle may hold several pieces) is a complex genomic rearrangement, not
+            // ecDNA (Samy, 2026-11-17): it is left unexplained here, so the CGR check counts it. It is still drawn (applyHierarchy = false keeps it).
+            if (e.severalCircles)
+            {
+                return true;
+            }
+
             for (std::size_t i = 0; i < e.oldStrandIDs.size(); ++i)
             {
                 const int strandID = e.oldStrandIDs[i];
