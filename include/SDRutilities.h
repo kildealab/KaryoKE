@@ -365,7 +365,50 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& rawSubHeader, int numOrigin
             }
         }
 
-        return -1;
+        // The deleted bases may also be listed as several single-piece records that together cover the gap end to end (Samy, 2026-11-17, e.g. the
+        // 89-base gap 23/236.881209-236.881299 cut into the circles 23/236.881209/236.881219 and 23/236.881219/236.881299): all of them are part of the
+        // indel. The first is returned, the others are marked as taken here.
+        std::vector<std::pair<std::pair<double, double>, int>> pieces;			// {low, high}, newStrandID
+
+        for (const SDRdataRecord& candidate : subHeader.dataRecords)
+        {
+            if (!isRearrangementCandidate(candidate.newStrandID, numOriginalStrands) || candidate.fragments.size() != 1 || excisedRecordIDs.count(candidate.newStrandID)
+                || candidate.fragments[0].oldStrandID != strandID)
+            {
+                continue;
+            }
+
+            const SDRfragment& piece = candidate.fragments[0];
+            const double low = std::min(piece.oldStartPosition, piece.oldEndPosition);
+            const double high = std::max(piece.oldStartPosition, piece.oldEndPosition);
+
+            if (basesBetween(gapLow, low) >= -1 && basesBetween(high, gapHigh) >= -1)
+            {
+                pieces.push_back({{low, high}, candidate.newStrandID});
+            }
+        }
+
+        std::sort(pieces.begin(), pieces.end());
+
+        if (pieces.size() < 2 || std::llabs(basesBetween(gapLow, pieces.front().first.first)) > 1 || std::llabs(basesBetween(pieces.back().first.second, gapHigh)) > 1)
+        {
+            return -1;
+        }
+
+        for (std::size_t k = 0; k + 1 < pieces.size(); ++k)
+        {
+            if (std::llabs(basesBetween(pieces[k].first.second, pieces[k + 1].first.first)) > 1)
+            {
+                return -1;							// Something of the gap is not listed
+            }
+        }
+
+        for (std::size_t k = 1; k < pieces.size(); ++k)
+        {
+            excisedRecordIDs.insert(pieces[k].second);
+        }
+
+        return pieces.front().second;
     };
 
     for (SDRdataRecord& record : cleaned.dataRecords)
