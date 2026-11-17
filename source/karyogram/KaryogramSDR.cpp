@@ -1,5 +1,6 @@
 #include <cairo/cairo.h>
 #include <cmath>
+#include <limits>
 #include <algorithm>
 #include <map>
 #include <string>
@@ -1173,6 +1174,7 @@ void Karyogram::drawPaintedFragment(			// Function to draw the individual fragme
         double highMbp;
         std::size_t first;								// First and last segment index of the block
         std::size_t last;
+        bool swappedWithTrailingPiece = false;					// An inverted block whose trailing forward piece(s) were split off (see below)
     };
 
     std::vector<bool> dashedBoundary(segments.size() + 1, false);			// Boundary k lies between segments k-1 and k
@@ -1244,6 +1246,52 @@ void Karyogram::drawPaintedFragment(			// Function to draw the individual fragme
             blocks.push_back({segment.oldStrandID, lowMbp, highMbp, i, i});
         }
 
+        // An inverted block also ends with a reversed piece (Samy, 2026-11-17): forward pieces trailing it were not flipped back inside an inversion but
+        // swapped with it, e.g. 14/89.68662/89.685795, 14/89.684746/89.685795: the forward piece lies below the reversed one, so it moved. They become
+        // blocks of their own.
+        for (std::size_t b = 0; b < blocks.size(); ++b)
+        {
+            PieceBlock& block = blocks[b];
+
+            if (!segments[block.first].isReversed || segments[block.last].isReversed)
+            {
+                continue;
+            }
+
+            std::size_t newLast = block.last;
+            while (newLast > block.first && (!segments[newLast].isReversed || isWhiteColor(segments[newLast].color)))
+            {
+                --newLast;
+            }
+
+            std::vector<PieceBlock> trailing;
+            for (std::size_t k = newLast + 1; k <= block.last; ++k)
+            {
+                if (!isWhiteColor(segments[k].color))
+                {
+                    const double lowMbp = std::min(segments[k].oldStartPosition, segments[k].oldEndPosition);
+                    const double highMbp = std::max(segments[k].oldStartPosition, segments[k].oldEndPosition);
+                    trailing.push_back({segments[k].oldStrandID, lowMbp, highMbp, k, k});
+                }
+            }
+
+            block.last = newLast;
+            block.swappedWithTrailingPiece = !trailing.empty();
+            block.lowMbp = std::numeric_limits<double>::max();
+            block.highMbp = std::numeric_limits<double>::lowest();
+            for (std::size_t k = block.first; k <= block.last; ++k)
+            {
+                if (!isWhiteColor(segments[k].color))
+                {
+                    block.lowMbp = std::min({block.lowMbp, segments[k].oldStartPosition, segments[k].oldEndPosition});
+                    block.highMbp = std::max({block.highMbp, segments[k].oldStartPosition, segments[k].oldEndPosition});
+                }
+            }
+
+            blocks.insert(blocks.begin() + static_cast<long>(b) + 1, trailing.begin(), trailing.end());
+            b += trailing.size();
+        }
+
         std::map<int, std::vector<std::size_t>> blocksByStrand;
         for (std::size_t b = 0; b < blocks.size(); ++b)
         {
@@ -1269,15 +1317,24 @@ void Karyogram::drawPaintedFragment(			// Function to draw the individual fragme
             std::vector<double> best(n, 0.0);
             std::vector<int> previousInRun(n, -1);
 
+            // An inverted block swapped with the forward piece trailing it keeps its place, and the forward piece is the moved one: the inversion already shows
+            // with its chevron (Samy, 2026-11-17: for 14/89.68662/89.685795, 14/89.684746/89.685795 the arrow marks the forward piece, originally before
+            // the inverted one).
+            const double invertedBlockBonusMbp = 1000.0;
+            const auto blockWeight = [&](const PieceBlock& block)
+            {
+                return block.highMbp - block.lowMbp + oneBaseMbp + (block.swappedWithTrailingPiece ? invertedBlockBonusMbp : 0.0);
+            };
+
             for (std::size_t a = 0; a < n; ++a)
             {
                 const PieceBlock& blockA = blocks[indices[a]];
-                best[a] = blockA.highMbp - blockA.lowMbp + oneBaseMbp;
+                best[a] = blockWeight(blockA);
 
                 for (std::size_t c = 0; c < a; ++c)
                 {
                     const PieceBlock& blockC = blocks[indices[c]];
-                    const double candidate = best[c] + (blockA.highMbp - blockA.lowMbp + oneBaseMbp);
+                    const double candidate = best[c] + blockWeight(blockA);
 
                     if (blockC.lowMbp < blockA.lowMbp && candidate > best[a])
                     {
@@ -2134,6 +2191,26 @@ static bool hasPiecesMovedWithinStrand(const std::vector<SDRfragment>& fragments
                     break;
                 }
 
+                // An inverted block ends with a reversed piece: a forward piece is part of it only when a reversed piece of the block follows it
+                // (a piece flipped back inside the inversion), otherwise it was swapped with the inversion (see drawPaintedFragment()).
+                if (next.oldStartPosition <= next.oldEndPosition)
+                {
+                    bool reversedFollows = false;
+                    for (std::size_t k = last + 2; k < fragments.size() && fragments[k].oldStrandID == first.oldStrandID; ++k)
+                    {
+                        if (fragments[k].oldStartPosition > fragments[k].oldEndPosition)
+                        {
+                            reversedFollows = highOf(fragments[k]) <= lowOf(next) + svToleranceMbp;
+                            break;
+                        }
+                    }
+
+                    if (!reversedFollows)
+                    {
+                        break;
+                    }
+                }
+
                 bool somethingBetween = false;
                 for (std::size_t k = 0; k < fragments.size() && !somethingBetween; ++k)
                 {
@@ -2164,6 +2241,116 @@ static bool hasPiecesMovedWithinStrand(const std::vector<SDRfragment>& fragments
     return false;
 }
 
+
+
+// Which pieces of a single-chromosome record moved (Samy, 2026-11-17), by the same rule drawPaintedFragment() uses for the arrows: pieces are grouped into
+// blocks (an inverted block starts and ends with a reversed piece and reads downward with nothing of the strand in between; forward pieces trailing it were
+// swapped with it), and the heaviest increasing run of blocks by length stays in place (an inverted block swapped with a trailing piece is preferred to stay).
+static std::vector<bool> movedFragmentFlags(const std::vector<SDRfragment>& fragments)
+{
+    const auto lowOf = [](const SDRfragment& fragment) { return std::min(fragment.oldStartPosition, fragment.oldEndPosition); };
+    const auto highOf = [](const SDRfragment& fragment) { return std::max(fragment.oldStartPosition, fragment.oldEndPosition); };
+    const auto reversed = [](const SDRfragment& fragment) { return fragment.oldStartPosition > fragment.oldEndPosition; };
+
+    struct Block { std::size_t first; std::size_t last; double low; double high; bool swapped; };
+    std::vector<Block> blocks;
+
+    for (std::size_t i = 0; i < fragments.size(); ++i)
+    {
+        if (!blocks.empty())
+        {
+            Block& previous = blocks.back();
+            const SDRfragment& previousFragment = fragments[previous.last];
+            bool somethingBetween = false;
+
+            for (std::size_t k = 0; k < fragments.size() && !somethingBetween; ++k)
+            {
+                somethingBetween = k != i && k != previous.last && fragments[k].oldStrandID == fragments[i].oldStrandID
+                                   && highOf(fragments[k]) > highOf(fragments[i]) + svToleranceMbp && lowOf(fragments[k]) < lowOf(previousFragment) - svToleranceMbp;
+            }
+
+            if (fragments[previous.first].oldStrandID == fragments[i].oldStrandID && reversed(fragments[previous.first])
+                && highOf(fragments[i]) <= lowOf(previousFragment) + svToleranceMbp && !somethingBetween)
+            {
+                previous.last = i;
+                previous.low = std::min(previous.low, lowOf(fragments[i]));
+                previous.high = std::max(previous.high, highOf(fragments[i]));
+                continue;
+            }
+        }
+
+        blocks.push_back({i, i, lowOf(fragments[i]), highOf(fragments[i]), false});
+    }
+
+    for (std::size_t b = 0; b < blocks.size(); ++b)					// Split off forward pieces trailing an inverted block
+    {
+        Block& block = blocks[b];
+
+        if (!reversed(fragments[block.first]) || reversed(fragments[block.last]))
+        {
+            continue;
+        }
+
+        std::size_t newLast = block.last;
+        while (newLast > block.first && !reversed(fragments[newLast]))
+        {
+            --newLast;
+        }
+
+        std::vector<Block> trailing;
+        for (std::size_t k = newLast + 1; k <= block.last; ++k)
+        {
+            trailing.push_back({k, k, lowOf(fragments[k]), highOf(fragments[k]), false});
+        }
+
+        block.last = newLast;
+        block.swapped = true;
+        block.low = lowOf(fragments[block.first]);
+        block.high = highOf(fragments[block.first]);
+        for (std::size_t k = block.first; k <= block.last; ++k)
+        {
+            block.low = std::min(block.low, lowOf(fragments[k]));
+            block.high = std::max(block.high, highOf(fragments[k]));
+        }
+
+        blocks.insert(blocks.begin() + static_cast<long>(b) + 1, trailing.begin(), trailing.end());
+        b += trailing.size();
+    }
+
+    const std::size_t n = blocks.size();
+    const double oneBaseMbp = 0.000001;
+    const auto weight = [&](const Block& block) { return block.high - block.low + oneBaseMbp + (block.swapped ? 1000.0 : 0.0); };
+    std::vector<double> best(n, 0.0);
+    std::vector<int> previousInRun(n, -1);
+
+    for (std::size_t a = 0; a < n; ++a)
+    {
+        best[a] = weight(blocks[a]);
+
+        for (std::size_t c = 0; c < a; ++c)
+        {
+            if (fragments[blocks[c].first].oldStrandID == fragments[blocks[a].first].oldStrandID && blocks[c].low < blocks[a].low && best[c] + weight(blocks[a]) > best[a])
+            {
+                best[a] = best[c] + weight(blocks[a]);
+                previousInRun[a] = static_cast<int>(c);
+            }
+        }
+    }
+
+    std::vector<bool> moved(fragments.size(), true);
+    int runEnd = n ? static_cast<int>(std::max_element(best.begin(), best.end()) - best.begin()) : -1;
+
+    while (runEnd != -1)
+    {
+        for (std::size_t k = blocks[runEnd].first; k <= blocks[runEnd].last; ++k)
+        {
+            moved[k] = false;
+        }
+        runEnd = previousInRun[runEnd];
+    }
+
+    return moved;
+}
 
 
 // Builds painted segments for the "remaining" (2-or-more-fragment) half of a long deletion, scaled to the ORIGINAL chromosome's full length
@@ -2399,7 +2586,7 @@ std::vector<PaintedSegment> Karyogram::buildMixedStrandSegmentsWithGaps(
     if (movedPiecesLayout)
     {
         // Pieces in file order. Every stretch of the chromosome found in no piece (deleted) is a white gap: the chromosome-end ones at the top/bottom,
-        // an inner one next to the piece whose upper end it borders (after a forward piece, before a reversed one), so material that merely moved
+        // an inner one next to a piece it borders (see below), so material that merely moved
         // elsewhere on the chromosome is never drawn as a gap. Scaled to the original chromosome length like the sorted deletion layout.
         const std::size_t sizeIndex = static_cast<std::size_t>(homeOldStrandID);
         const double originalSizeMbp = (sizeIndex < masterHeader.intactChromosomeSizes.size()) ? masterHeader.intactChromosomeSizes[sizeIndex] : 0.0;
@@ -2426,6 +2613,7 @@ std::vector<PaintedSegment> Karyogram::buildMixedStrandSegmentsWithGaps(
             deleted.emplace_back(reached, originalSizeMbp);
         }
 
+        const std::vector<bool> moved = movedFragmentFlags(record.fragments);
         std::vector<std::vector<std::pair<double, double>>> gapsBefore(record.fragments.size());
         std::vector<std::vector<std::pair<double, double>>> gapsAfter(record.fragments.size());
         std::vector<std::pair<double, double>> leadingGaps;
@@ -2444,14 +2632,71 @@ std::vector<PaintedSegment> Karyogram::buildMixedStrandSegmentsWithGaps(
                 continue;
             }
 
-            for (std::size_t i = 0; i < record.fragments.size(); ++i)
-            {
-                const SDRfragment& fragment = record.fragments[i];
+            // Deleted stretches stay next to a piece that did not move (Samy, 2026-11-17): only a moved piece leaves its place. Among pieces in place, the
+            // gap goes next to the piece whose upper end borders it (after a forward piece, before a reversed one, e.g. above an inversion), else next to the
+            // piece whose lower end borders its upper end (before a forward piece, after a reversed one), but never at the spot a moved piece was cut out
+            // of, which stays plain. E.g. 14/0/89.684746, 14/89.68662/89.685795, 14/89.684746/89.685795, 14/102.453144/113: above the inverted piece is
+            // where the moved piece was cut out, so the white gap follows the moved piece instead. Moved pieces are used only when nothing else fits.
+            bool placed = false;
 
-                if (approxEqual(std::max(fragment.oldStartPosition, fragment.oldEndPosition), gap.first, tolerance))
+            const auto lowOf = [](const SDRfragment& fragment) { return std::min(fragment.oldStartPosition, fragment.oldEndPosition); };
+            const auto highOf = [](const SDRfragment& fragment) { return std::max(fragment.oldStartPosition, fragment.oldEndPosition); };
+
+            // Boundary k (between pieces k-1 and k) is a cut-out spot when those two pieces are the original neighbours of a moved piece.
+            const auto isCutSite = [&](std::size_t k)
+            {
+                if (k == 0 || k >= record.fragments.size())
                 {
-                    (fragment.oldStartPosition <= fragment.oldEndPosition ? gapsAfter[i] : gapsBefore[i]).push_back(gap);
-                    break;
+                    return false;
+                }
+
+                const SDRfragment& above = record.fragments[k - 1];
+                const SDRfragment& below = record.fragments[k];
+
+                for (std::size_t m = 0; m < record.fragments.size(); ++m)
+                {
+                    if (!moved[m] || m == k - 1 || m == k)
+                    {
+                        continue;
+                    }
+
+                    const SDRfragment& piece = record.fragments[m];
+                    const bool aboveLowSide = approxEqual(highOf(above), lowOf(piece), tolerance) && approxEqual(lowOf(below), highOf(piece), tolerance);
+                    const bool aboveHighSide = approxEqual(lowOf(above), highOf(piece), tolerance) && approxEqual(highOf(below), lowOf(piece), tolerance);
+
+                    if (aboveLowSide || aboveHighSide)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            };
+
+            for (int pass = 0; pass < 2 && !placed; ++pass)				// pass 0: pieces in place only, pass 1: any piece
+            {
+                for (std::size_t i = 0; i < record.fragments.size() && !placed; ++i)
+                {
+                    const SDRfragment& fragment = record.fragments[i];
+                    const bool forward = fragment.oldStartPosition <= fragment.oldEndPosition;
+
+                    if ((pass == 1 || (!moved[i] && !isCutSite(forward ? i + 1 : i))) && approxEqual(highOf(fragment), gap.first, tolerance))
+                    {
+                        (forward ? gapsAfter[i] : gapsBefore[i]).push_back(gap);
+                        placed = true;
+                    }
+                }
+
+                for (std::size_t i = 0; i < record.fragments.size() && !placed; ++i)
+                {
+                    const SDRfragment& fragment = record.fragments[i];
+                    const bool forward = fragment.oldStartPosition <= fragment.oldEndPosition;
+
+                    if ((pass == 1 || (!moved[i] && !isCutSite(forward ? i : i + 1))) && approxEqual(lowOf(fragment), gap.second, tolerance))
+                    {
+                        (forward ? gapsBefore[i] : gapsAfter[i]).push_back(gap);
+                        placed = true;
+                    }
                 }
             }
         }

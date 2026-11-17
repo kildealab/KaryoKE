@@ -4257,8 +4257,57 @@ inline std::vector<SDRchromothripsisEvent> detectShatteredClusters(const SDRsubH
                 }
             }
 
+            // Material deleted or cut out as ecDNA right at the edge of an out-of-order stretch belongs to it (Samy, 2026-11-17, e.g. 14/0/89.684746,
+            // 14/89.68662/89.685795, 14/89.684746/89.685795, 14/102.453144/113 with the circle 14/89.68662/102.453144 is one complex genomic rearrangement,
+            // not a CGR plus ecDNA): the stretch is widened over every gap in the strand's linear pieces that touches it, so the deletion or ecDNA there is
+            // silenced like anything else inside it.
             if (!regions.empty())
             {
+                const int strandID = *strandSet.begin();
+                std::vector<std::pair<double, double>> linearPieces;
+
+                for (const SDRdataRecord& record : subHeader.dataRecords)
+                {
+                    if (!record.linear || !isRearrangementCandidate(record.newStrandID, numOriginalStrands))
+                    {
+                        continue;
+                    }
+
+                    for (const SDRfragment& fragment : record.fragments)
+                    {
+                        if (fragment.oldStrandID == strandID)
+                        {
+                            linearPieces.emplace_back(std::min(fragment.oldStartPosition, fragment.oldEndPosition), std::max(fragment.oldStartPosition, fragment.oldEndPosition));
+                        }
+                    }
+                }
+
+                std::sort(linearPieces.begin(), linearPieces.end());
+
+                for (std::pair<double, double>& region : regions)
+                {
+                    for (std::size_t k = 0; k + 1 < linearPieces.size(); ++k)
+                    {
+                        const double gapLow = std::max_element(linearPieces.begin(), linearPieces.begin() + static_cast<long>(k) + 1,
+                                                               [](const std::pair<double, double>& x, const std::pair<double, double>& y) { return x.second < y.second; })->second;
+                        const double gapHigh = linearPieces[k + 1].first;
+
+                        if (gapHigh - gapLow <= svToleranceMbp)
+                        {
+                            continue;						// No material missing here
+                        }
+
+                        if (approxEqual(gapLow, region.second, svToleranceMbp))
+                        {
+                            region.second = gapHigh;
+                        }
+                        else if (approxEqual(gapHigh, region.first, svToleranceMbp))
+                        {
+                            region.first = gapLow;
+                        }
+                    }
+                }
+
                 for (const std::pair<double, double>& region : regions)
                 {
                     SDRchromothripsisEvent event{};
@@ -4509,6 +4558,25 @@ inline std::map<int, std::vector<std::pair<std::string, int>>> countMutationsPer
                     {
                         explainedReversals.push_back(range(strandID, region.first, region.second));
                         explainedGaps.push_back(range(strandID, region.first, region.second));
+                    }
+                }
+
+                // Pieces cut out of the stretch and listed on their own (an ecDNA or excised piece at its edge, see detectShatteredClusters()) are part of it too.
+                for (const SDRdataRecord& record : subHeader.dataRecords)
+                {
+                    const bool insideRegions = isRearrangementCandidate(record.newStrandID, numOriginalStrands) && !record.fragments.empty()
+                        && std::all_of(record.fragments.begin(), record.fragments.end(), [&](const SDRfragment& fragment)
+                           {
+                               const double low = std::min(fragment.oldStartPosition, fragment.oldEndPosition);
+                               const double high = std::max(fragment.oldStartPosition, fragment.oldEndPosition);
+                               return std::find(e.involvedStrandIDs.begin(), e.involvedStrandIDs.end(), fragment.oldStrandID) != e.involvedStrandIDs.end()
+                                      && std::any_of(e.regions.begin(), e.regions.end(), [&](const std::pair<double, double>& region)
+                                                     { return low >= region.first - svToleranceMbp && high <= region.second + svToleranceMbp; });
+                           });
+
+                    if (insideRegions)
+                    {
+                        explainRecords({record.newStrandID}, e.involvedStrandIDs, true);
                     }
                 }
                 continue;
