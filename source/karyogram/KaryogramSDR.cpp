@@ -1136,6 +1136,247 @@ void Karyogram::drawPaintedFragment(			// Function to draw the individual fragme
 
 
     // ------------------------------------------------
+    // Pieces moved within their own chromosome (intra-chromosomal translocations)
+    // ------------------------------------------------
+    // Pieces of one original strand are grouped into blocks: an inverted stretch (a reversed piece and the pieces that keep reading downward after it, across
+    // white gaps too) is one block, so plain and nested inversions never count as moves. The blocks of each strand that stay in their original order are the heaviest increasing run of their
+    // lowest positions (the most material left in place); every other block was moved. Each moved block gets a red hooked arrow on the left of the
+    // chromosome (deletion pieces and ecDNA are drawn on the right) from the spot it was cut out of, to its own middle, and its
+    // borders at its new place are drawn dashed (the place it was cut out of gets no line at all). Only for whole chromosomes (drawOutline), not for excised pieces.
+    struct PieceBlock
+    {
+        int strandID;
+        double lowMbp;
+        double highMbp;
+        std::size_t first;								// First and last segment index of the block
+        std::size_t last;
+    };
+
+    std::vector<bool> dashedBoundary(segments.size() + 1, false);			// Boundary k lies between segments k-1 and k
+    std::vector<bool> hiddenBoundary(segments.size() + 1, false);			// Where a moved piece was cut out: no line at all
+    std::vector<PieceBlock> movedBlocks;
+    std::vector<std::pair<double, double>> movedArrows;					// fromY, toY in pixels
+
+    if (drawOutline)
+    {
+        std::vector<PieceBlock> blocks;
+
+        // Is any other piece of this strand lying between two positions? Then two pieces next to each other on the drawing were not neighbours originally.
+        const auto pieceLiesBetween = [&](int strandID, double lowMbp, double highMbp, std::size_t skipA, std::size_t skipB)
+        {
+            for (std::size_t k = 0; k < segments.size(); ++k)
+            {
+                if (k == skipA || k == skipB || segments[k].oldStrandID != strandID || isWhiteColor(segments[k].color))
+                {
+                    continue;
+                }
+
+                const double otherLow = std::min(segments[k].oldStartPosition, segments[k].oldEndPosition);
+                const double otherHigh = std::max(segments[k].oldStartPosition, segments[k].oldEndPosition);
+
+                if (otherHigh > lowMbp + svToleranceMbp && otherLow < highMbp - svToleranceMbp)
+                {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        for (std::size_t i = 0; i < segments.size(); ++i)
+        {
+            const PaintedSegment& segment = segments[i];
+
+            if (segment.oldStrandID < 0 || isWhiteColor(segment.color))
+            {
+                continue;
+            }
+
+            const double lowMbp = std::min(segment.oldStartPosition, segment.oldEndPosition);
+            const double highMbp = std::max(segment.oldStartPosition, segment.oldEndPosition);
+
+            // An inverted block starts with a reversed piece and keeps reading downward: each next piece lies wholly below the previous one with nothing of the
+            // strand in between (a piece flipped back inside the inversion, a nested inversion, stays part of it).
+            if (!blocks.empty())
+            {
+                PieceBlock& previous = blocks.back();
+                const PaintedSegment& previousSegment = segments[previous.last];
+                const double previousLow = std::min(previousSegment.oldStartPosition, previousSegment.oldEndPosition);
+                bool onlyWhiteBetween = true;
+
+                for (std::size_t j = previous.last + 1; j < i; ++j)
+                {
+                    onlyWhiteBetween = onlyWhiteBetween && isWhiteColor(segments[j].color);
+                }
+
+                if (onlyWhiteBetween && previous.strandID == segment.oldStrandID && segments[previous.first].isReversed
+                    && highMbp <= previousLow + svToleranceMbp && !pieceLiesBetween(segment.oldStrandID, highMbp, previousLow, i, previous.last))
+                {
+                    previous.lowMbp = std::min(previous.lowMbp, lowMbp);
+                    previous.highMbp = std::max(previous.highMbp, highMbp);
+                    previous.last = i;
+                    continue;
+                }
+            }
+
+            blocks.push_back({segment.oldStrandID, lowMbp, highMbp, i, i});
+        }
+
+        std::map<int, std::vector<std::size_t>> blocksByStrand;
+        for (std::size_t b = 0; b < blocks.size(); ++b)
+        {
+            blocksByStrand[blocks[b].strandID].push_back(b);
+        }
+
+        const auto blockMiddleY = [&](const PieceBlock& block)
+        {
+            return y + height * (segments[block.first].startFraction + segments[block.last].endFraction) / 2.0;
+        };
+
+        for (const auto& [strandID, indices] : blocksByStrand)
+        {
+            const std::size_t n = indices.size();
+
+            if (n < 2)
+            {
+                continue;
+            }
+
+            // Heaviest increasing run of lowest positions, weighted by block length (plus one base, so single-base pieces count too)
+            const double oneBaseMbp = 0.000001;
+            std::vector<double> best(n, 0.0);
+            std::vector<int> previousInRun(n, -1);
+
+            for (std::size_t a = 0; a < n; ++a)
+            {
+                const PieceBlock& blockA = blocks[indices[a]];
+                best[a] = blockA.highMbp - blockA.lowMbp + oneBaseMbp;
+
+                for (std::size_t c = 0; c < a; ++c)
+                {
+                    const PieceBlock& blockC = blocks[indices[c]];
+                    const double candidate = best[c] + (blockA.highMbp - blockA.lowMbp + oneBaseMbp);
+
+                    if (blockC.lowMbp < blockA.lowMbp && candidate > best[a])
+                    {
+                        best[a] = candidate;
+                        previousInRun[a] = static_cast<int>(c);
+                    }
+                }
+            }
+
+            std::vector<bool> inPlace(n, false);
+            int runEnd = static_cast<int>(std::max_element(best.begin(), best.end()) - best.begin());
+            while (runEnd != -1)
+            {
+                inPlace[runEnd] = true;
+                runEnd = previousInRun[runEnd];
+            }
+
+            for (std::size_t a = 0; a < n; ++a)
+            {
+                if (inPlace[a])
+                {
+                    continue;
+                }
+
+                const PieceBlock& moved = blocks[indices[a]];
+
+                // The block it used to sit next to: the one starting closest to where it ended (it sat above it), else the one ending closest to where it started.
+                int originBlock = -1;
+                double closest = 0.0;
+
+                for (std::size_t c = 0; c < n; ++c)
+                {
+                    if (c == a)
+                    {
+                        continue;
+                    }
+
+                    const PieceBlock& other = blocks[indices[c]];
+                    const double distanceBelow = std::fabs(other.lowMbp - moved.highMbp);
+                    const double distanceAbove = std::fabs(moved.lowMbp - other.highMbp);
+
+                    if (originBlock == -1 || distanceBelow < closest)
+                    {
+                        originBlock = static_cast<int>(c);
+                        closest = distanceBelow;
+                    }
+
+                    if (distanceAbove < closest)
+                    {
+                        originBlock = static_cast<int>(c);
+                        closest = distanceAbove;
+                    }
+                }
+
+                const PieceBlock& origin = blocks[indices[originBlock]];
+
+                // The arrow starts exactly where the piece was cut out: the end of the former neighbour that touched it (top of a segment for its listed
+                // start, bottom for its listed end).
+                double fromY = blockMiddleY(origin);
+                double closestEnd = -1.0;
+
+                for (std::size_t k = origin.first; k <= origin.last; ++k)
+                {
+                    const PaintedSegment& piece = segments[k];
+
+                    if (isWhiteColor(piece.color))
+                    {
+                        continue;
+                    }
+
+                    const double startDistance = std::min(std::fabs(piece.oldStartPosition - moved.lowMbp), std::fabs(piece.oldStartPosition - moved.highMbp));
+                    const double endDistance = std::min(std::fabs(piece.oldEndPosition - moved.lowMbp), std::fabs(piece.oldEndPosition - moved.highMbp));
+
+                    if (closestEnd < 0.0 || startDistance < closestEnd)
+                    {
+                        closestEnd = startDistance;
+                        fromY = y + height * piece.startFraction;
+                    }
+
+                    if (endDistance < closestEnd)
+                    {
+                        closestEnd = endDistance;
+                        fromY = y + height * piece.endFraction;
+                    }
+                }
+
+                movedArrows.emplace_back(fromY, blockMiddleY(moved));
+                movedBlocks.push_back(moved);
+
+                dashedBoundary[moved.first] = true;
+                dashedBoundary[moved.last + 1] = true;
+            }
+        }
+    }
+
+
+    // The spot a moved piece was cut out of: the two pieces that used to flank it now meet there (one ends where the moved piece started, the other starts
+    // where it ended). That border is left without a line, so only the new place is marked.
+    for (std::size_t k = 1; k < segments.size(); ++k)
+    {
+        const PaintedSegment& above = segments[k - 1];
+        const PaintedSegment& below = segments[k];
+
+        if (dashedBoundary[k] || above.oldStrandID < 0 || above.oldStrandID != below.oldStrandID || isWhiteColor(above.color) || isWhiteColor(below.color))
+        {
+            continue;
+        }
+
+        const double gapLow = std::min(above.oldEndPosition, below.oldStartPosition);
+        const double gapHigh = std::max(above.oldEndPosition, below.oldStartPosition);
+
+        for (const PieceBlock& moved : movedBlocks)
+        {
+            if (moved.strandID == above.oldStrandID && approxEqual(moved.lowMbp, gapLow, svToleranceMbp) && approxEqual(moved.highMbp, gapHigh, svToleranceMbp))
+            {
+                hiddenBoundary[k] = true;
+            }
+        }
+    }
+
+
+    // ------------------------------------------------
     // Segment boundaries
     // ------------------------------------------------
 
@@ -1144,18 +1385,39 @@ void Karyogram::drawPaintedFragment(			// Function to draw the individual fragme
 
     // Skip boundary lines touching a white (deletion gap) segment, a thin gap with black lines on both edges reads as solid black instead of white. Inverted segments are
     // marked by their chevron alone, no outlining lines.
+    // The borders of a moved piece at its new place are dashed, also next to an inverted piece or a white deletion gap.
+    const double junctionDash[2] = { 3.0, 2.0 };
+
     for (std::size_t i = 0; i + 1 < segments.size(); i++)
     {
-        if (isWhiteColor(segments[i].color) || isWhiteColor(segments[i + 1].color) || segments[i].isReversed || segments[i + 1].isReversed)
+        const bool dashed = dashedBoundary[i + 1];
+
+        // Next to a white gap only a moved piece's dashed border is drawn (between two white segments never)
+        if ((isWhiteColor(segments[i].color) || isWhiteColor(segments[i + 1].color)) && (!dashed || (isWhiteColor(segments[i].color) && isWhiteColor(segments[i + 1].color))))
+        {
+            continue;
+        }
+
+        if (!dashed && (segments[i].isReversed || segments[i + 1].isReversed || hiddenBoundary[i + 1]))
         {
             continue;
         }
 
         const double boundaryY = y + height * segments[i].endFraction;
 
+        if (dashed)
+        {
+            cairo_set_dash(cr, junctionDash, 2, 0.0);
+        }
+
         cairo_move_to(cr, x, boundaryY);
         cairo_line_to(cr, x + width, boundaryY);
         cairo_stroke(cr);
+
+        if (dashed)
+        {
+            cairo_set_dash(cr, nullptr, 0, 0.0);
+        }
     }
 
 
@@ -1244,6 +1506,18 @@ void Karyogram::drawPaintedFragment(			// Function to draw the individual fragme
         cairo_fill(cr);
     }
 
+
+    // --------------------------------------
+    // Arrows of pieces moved within the chromosome, drawn last so nothing covers them
+    // --------------------------------------
+    for (std::size_t i = 0; i < movedArrows.size(); ++i)
+    {
+        const double fromY = movedArrows[i].first;
+        const double toY = movedArrows[i].second;
+        const double bulge = std::max(11.0, 0.6 * std::fabs(toY - fromY)) + 6.0 * static_cast<double>(i);	// Further arrows reach a little further out
+
+        drawMovedSegmentArrow(cr, x, fromY, toY, bulge, 1.3, 5.5, 3.6);
+    }
 }
 
 
@@ -1733,6 +2007,9 @@ std::vector<PaintedSegment> Karyogram::buildPaintedSegments(
         segment.color = getColorForOriginalStrand(fragment.oldStrandID, masterHeader);	// Obtain color of the original chromosome from which this fragment originated
         segment.isSecondHomolog = isSecondHomologStrand(fragment.oldStrandID, masterHeader);
         segment.isReversed = fragment.oldStartPosition > fragment.oldEndPosition;	// If the start location is > the end location of the fragment, an inversion occurred.
+        segment.oldStrandID = fragment.oldStrandID;
+        segment.oldStartPosition = fragment.oldStartPosition;
+        segment.oldEndPosition = fragment.oldEndPosition;
         segment.hasCentromere = false;							// By default, segments/fragments do not contain centromeres, unless hasCentromere = true.
 
         if (fragment.hasCentromere && fragmentLengthMbp > 0.0)				// If fragment does have a centromere
@@ -1805,6 +2082,67 @@ std::vector<PaintedSegment> Karyogram::buildPaintedSegments(
 
 
 
+// Are pieces of one strand listed out of their original order, beyond inversions? Pieces are grouped into blocks first: an inverted stretch (a reversed piece
+// and the pieces that keep reading downward right after it, nothing else of the strand lying in between) is one block, so plain and nested inversions don't count.
+// True when a block starts below one listed before it. Same block rule as the moved-piece arrows in drawPaintedFragment().
+static bool hasPiecesMovedWithinStrand(const std::vector<SDRfragment>& fragments)
+{
+    const auto lowOf = [](const SDRfragment& fragment) { return std::min(fragment.oldStartPosition, fragment.oldEndPosition); };
+    const auto highOf = [](const SDRfragment& fragment) { return std::max(fragment.oldStartPosition, fragment.oldEndPosition); };
+
+    std::map<int, double> highestBlockLow;						// Per strand, the highest block start seen so far
+    std::size_t i = 0;
+
+    while (i < fragments.size())
+    {
+        const SDRfragment& first = fragments[i];
+        double blockLow = lowOf(first);
+        std::size_t last = i;
+
+        if (first.oldStartPosition > first.oldEndPosition)
+        {
+            while (last + 1 < fragments.size())
+            {
+                const SDRfragment& previous = fragments[last];
+                const SDRfragment& next = fragments[last + 1];
+
+                if (next.oldStrandID != first.oldStrandID || highOf(next) > lowOf(previous) + svToleranceMbp)
+                {
+                    break;
+                }
+
+                bool somethingBetween = false;
+                for (std::size_t k = 0; k < fragments.size() && !somethingBetween; ++k)
+                {
+                    somethingBetween = k != last && k != last + 1 && fragments[k].oldStrandID == first.oldStrandID
+                                       && highOf(fragments[k]) > highOf(next) + svToleranceMbp && lowOf(fragments[k]) < lowOf(previous) - svToleranceMbp;
+                }
+
+                if (somethingBetween)
+                {
+                    break;
+                }
+
+                ++last;
+                blockLow = std::min(blockLow, lowOf(next));
+            }
+        }
+
+        const auto seen = highestBlockLow.find(first.oldStrandID);
+        if (seen != highestBlockLow.end() && blockLow < seen->second)
+        {
+            return true;
+        }
+
+        highestBlockLow[first.oldStrandID] = (seen == highestBlockLow.end()) ? blockLow : std::max(seen->second, blockLow);
+        i = last + 1;
+    }
+
+    return false;
+}
+
+
+
 // Builds painted segments for the "remaining" (2-or-more-fragment) half of a long deletion, scaled to the ORIGINAL chromosome's full length
 // rather than this record's own reduced total - so the deleted region shows up as a distinct white gap rather than disappearing.
 std::vector<PaintedSegment> Karyogram::buildDeletionRemainingSegments(
@@ -1837,6 +2175,14 @@ std::vector<PaintedSegment> Karyogram::buildDeletionRemainingSegments(
     if (originalSizeMbp <= 0.0)
     {
         return segments;
+    }
+
+    // Pieces moved within the chromosome would be put back in their original order by the position sort below, hiding the move (only a border line
+    // was left). Such records keep their file order instead, with each deleted stretch still drawn as a white gap next to the piece it bordered.
+    if (hasPiecesMovedWithinStrand(record.fragments))
+    {
+        double totalLengthMbp = 0.0;
+        return buildMixedStrandSegmentsWithGaps(record, homeOldStrandID, humanGenome, masterHeader, totalLengthMbp, true);
     }
 
 
@@ -2003,7 +2349,8 @@ std::vector<PaintedSegment> Karyogram::buildMixedStrandSegmentsWithGaps(
     int homeOldStrandID,
     bool humanGenome,
     const SDRmasterHeader& masterHeader,
-    double& outTotalLengthMbp)								// Total length of chromosome plus the new fragment (can be larger than the original chromosome length)
+    double& outTotalLengthMbp,								// Total length of chromosome plus the new fragment (can be larger than the original chromosome length)
+    bool movedPiecesLayout)								// Single-strand record with pieces moved within the chromosome (see buildDeletionRemainingSegments)
 {
     std::vector<PaintedSegment> segments;
     outTotalLengthMbp = 0.0;
@@ -2020,12 +2367,97 @@ std::vector<PaintedSegment> Karyogram::buildMixedStrandSegmentsWithGaps(
         bool isGap;
         const SDRfragment* fragment; 							// valid if !isGap
         double lengthMbp;
+        bool insideInversion = false;							// Gaps only, see PaintedSegment::insideInversion
     };
 
     std::vector<PlannedPiece> plan;
     double totalLengthMbp = 0.0;
 
-    for (std::size_t i = 0; i < record.fragments.size(); ++i)
+    if (movedPiecesLayout)
+    {
+        // Pieces in file order. Every stretch of the chromosome found in no piece (deleted) is a white gap: the chromosome-end ones at the top/bottom,
+        // an inner one next to the piece whose upper end it borders (after a forward piece, before a reversed one), so material that merely moved
+        // elsewhere on the chromosome is never drawn as a gap. Scaled to the original chromosome length like the sorted deletion layout.
+        const std::size_t sizeIndex = static_cast<std::size_t>(homeOldStrandID);
+        const double originalSizeMbp = (sizeIndex < masterHeader.intactChromosomeSizes.size()) ? masterHeader.intactChromosomeSizes[sizeIndex] : 0.0;
+
+        std::vector<std::pair<double, double>> covered;
+        for (const SDRfragment& fragment : record.fragments)
+        {
+            covered.emplace_back(std::min(fragment.oldStartPosition, fragment.oldEndPosition), std::max(fragment.oldStartPosition, fragment.oldEndPosition));
+        }
+        std::sort(covered.begin(), covered.end());
+
+        std::vector<std::pair<double, double>> deleted;					// Stretches no piece covers, from 0 to the original length
+        double reached = 0.0;
+        for (const auto& [low, high] : covered)
+        {
+            if (low > reached && !approxEqual(low, reached, tolerance))
+            {
+                deleted.emplace_back(reached, low);
+            }
+            reached = std::max(reached, high);
+        }
+        if (originalSizeMbp > reached && !approxEqual(originalSizeMbp, reached, tolerance))
+        {
+            deleted.emplace_back(reached, originalSizeMbp);
+        }
+
+        std::vector<std::vector<std::pair<double, double>>> gapsBefore(record.fragments.size());
+        std::vector<std::vector<std::pair<double, double>>> gapsAfter(record.fragments.size());
+        std::vector<std::pair<double, double>> leadingGaps;
+        std::vector<std::pair<double, double>> trailingGaps;
+
+        for (const auto& gap : deleted)
+        {
+            if (approxEqual(gap.first, 0.0, tolerance))
+            {
+                leadingGaps.push_back(gap);
+                continue;
+            }
+            if (approxEqual(gap.second, originalSizeMbp, tolerance))
+            {
+                trailingGaps.push_back(gap);
+                continue;
+            }
+
+            for (std::size_t i = 0; i < record.fragments.size(); ++i)
+            {
+                const SDRfragment& fragment = record.fragments[i];
+
+                if (approxEqual(std::max(fragment.oldStartPosition, fragment.oldEndPosition), gap.first, tolerance))
+                {
+                    (fragment.oldStartPosition <= fragment.oldEndPosition ? gapsAfter[i] : gapsBefore[i]).push_back(gap);
+                    break;
+                }
+            }
+        }
+
+        const auto addGap = [&](const std::pair<double, double>& gap)
+        {
+            PlannedPiece gapPiece{true, nullptr, gap.second - gap.first};
+            gapPiece.insideInversion = recordHasGapInsideInvertedSegment(record, homeOldStrandID, gap.first, gap.second, tolerance);
+            plan.push_back(gapPiece);
+            totalLengthMbp += gapPiece.lengthMbp;
+        };
+
+        for (const auto& gap : leadingGaps) addGap(gap);
+
+        for (std::size_t i = 0; i < record.fragments.size(); ++i)
+        {
+            for (const auto& gap : gapsBefore[i]) addGap(gap);
+
+            const double fragLengthMbp = std::fabs(record.fragments[i].oldEndPosition - record.fragments[i].oldStartPosition);
+            plan.push_back({false, &record.fragments[i], fragLengthMbp});
+            totalLengthMbp += fragLengthMbp;
+
+            for (const auto& gap : gapsAfter[i]) addGap(gap);
+        }
+
+        for (const auto& gap : trailingGaps) addGap(gap);
+    }
+
+    for (std::size_t i = 0; i < record.fragments.size() && !movedPiecesLayout; ++i)
     {
         const SDRfragment& fragment = record.fragments[i];
         const double fragLengthMbp = std::fabs(fragment.oldEndPosition - fragment.oldStartPosition);
@@ -2090,6 +2522,7 @@ std::vector<PaintedSegment> Karyogram::buildMixedStrandSegmentsWithGaps(
             gapSegment.color = RGB{1.0, 1.0, 1.0};
             gapSegment.isReversed = false;
             gapSegment.hasCentromere = false;
+            gapSegment.insideInversion = piece.insideInversion;
             segments.push_back(gapSegment);
 
             runningPositionMbp += piece.lengthMbp;
@@ -2105,6 +2538,9 @@ std::vector<PaintedSegment> Karyogram::buildMixedStrandSegmentsWithGaps(
         segment.color = getColorForOriginalStrand(fragment.oldStrandID, masterHeader);
         segment.isSecondHomolog = isSecondHomologStrand(fragment.oldStrandID, masterHeader);
         segment.isReversed = fragment.oldStartPosition > fragment.oldEndPosition;
+        segment.oldStrandID = fragment.oldStrandID;
+        segment.oldStartPosition = fragment.oldStartPosition;
+        segment.oldEndPosition = fragment.oldEndPosition;
         segment.hasCentromere = false;
 
         if (fragment.hasCentromere && fragmentLengthMbp > 0.0)
@@ -2164,6 +2600,45 @@ std::vector<PaintedSegment> Karyogram::buildMixedStrandSegmentsWithGaps(
 
 
 
+
+
+
+void Karyogram::drawMovedSegmentArrow(					// Red hooked arrow of a piece moved within its own chromosome, drawn left of the chromosome edge
+    cairo_t* cr,
+    double edgeX,								// Left edge of the chromosome in pixels
+    double fromY,								// Middle of the piece the moved piece used to sit next to
+    double toY,									// Middle of the moved piece, where the head points
+    double bulge,								// How far left of the edge the curve reaches
+    double lineWidth,
+    double headLength,
+    double headHalfWidth)
+{
+    // One rounded C curve that leaves and enters the chromosome horizontally, so the head (drawn as part of the line, the line ends inside it) sits on the curve.
+    const double tipX = edgeX - 1.0;
+    const double headBaseX = tipX - headLength;
+
+    cairo_save(cr);
+    cairo_set_source_rgb(cr, 0.75, 0.22, 0.17);
+
+    cairo_new_path(cr);
+    cairo_arc(cr, tipX, fromY, lineWidth * 1.4, 0.0, 2.0 * M_PI);			// Small dot where the arrow starts
+    cairo_fill(cr);
+
+    cairo_set_line_width(cr, lineWidth);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    cairo_move_to(cr, tipX, fromY);
+    cairo_curve_to(cr, edgeX - bulge, fromY, edgeX - bulge, toY, headBaseX + 1.0, toY);
+    cairo_stroke(cr);
+
+    cairo_move_to(cr, tipX, toY);
+    cairo_line_to(cr, headBaseX, toY - headHalfWidth);
+    cairo_line_to(cr, headBaseX + 1.5, toY);
+    cairo_line_to(cr, headBaseX, toY + headHalfWidth);
+    cairo_close_path(cr);
+    cairo_fill(cr);
+
+    cairo_restore(cr);
+}
 
 
 

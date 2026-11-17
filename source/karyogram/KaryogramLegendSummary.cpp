@@ -472,7 +472,7 @@ void Karyogram::drawSDRlegend(cairo_t* cr, double legendY)
 
     cairo_set_source_rgb(cr, 0.1, 0.1, 0.1);
     cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-    cairo_set_font_size(cr, 20.0);
+    cairo_set_font_size(cr, 17.0);					// A little smaller than the SDD legend so the five SDR symbols fit on one row
 
     cairo_font_extents_t fontExtents;
     cairo_font_extents(cr, &fontExtents);
@@ -481,12 +481,44 @@ void Karyogram::drawSDRlegend(cairo_t* cr, double legendY)
     cairo_move_to(cr, legendX, textBaseline);
     cairo_show_text(cr, "Symbols:");
 
+    // Five symbols spread evenly over the space right of "Symbols:", from their measured label widths, so the row fits whatever the font.
+    const auto textWidth = [cr](const char* text)
+    {
+        cairo_text_extents_t extents;
+        cairo_text_extents(cr, text, &extents);
+        return extents.x_advance;
+    };
+
+    const double symbolsEnd = legendX + textWidth("Symbols:");
+    const double rowEnd = legendX - borderPaddingX + legendWidth - borderPaddingX;
+    const double itemWidths[5] =
+    {
+        14.0 + 10.0 + textWidth("Chromosome"),
+        7.0 + 10.0 + textWidth("Centromere"),
+        8.0 + 15.0 + textWidth("Reversed Segment"),
+        12.0 + 8.0 + 10.0 + textWidth("Moved Segment"),
+        14.0 + 18.0 + textWidth("ecDNA")
+    };
+    double itemsTotal = 0.0;
+    for (const double itemWidth : itemWidths)
+    {
+        itemsTotal += itemWidth;
+    }
+    const double itemGap = (rowEnd - symbolsEnd - itemsTotal) / 5.0;
+    double itemStart[5];
+    double cursor = symbolsEnd + itemGap;
+    for (int item = 0; item < 5; ++item)
+    {
+        itemStart[item] = cursor;
+        cursor += itemWidths[item] + itemGap;
+    }
+
     // --------------------------------------------------
     // Generic chromosome symbol - identical shape/logic to drawLegend()'s
     // --------------------------------------------------
     const double chromosomeWidth = 14.0;
     const double chromosomeHeight = 40.0;
-    const double chromosomeCenterX = 180.0;
+    const double chromosomeCenterX = itemStart[0] + 7.0;
     const double chromosomeX = chromosomeCenterX - chromosomeWidth / 2.0;
     const double chromosomeY = legendCenterY - chromosomeHeight / 2.0;
 
@@ -526,7 +558,7 @@ void Karyogram::drawSDRlegend(cairo_t* cr, double legendY)
     // --------------------------------------------------
     // Centromere symbol
     // --------------------------------------------------
-    const double centromereX = 400.0;
+    const double centromereX = itemStart[1] + 7.0;
     const double ellipseWidth = 14.0;
     const double ellipseHeight = 8.0;
 
@@ -550,7 +582,7 @@ void Karyogram::drawSDRlegend(cairo_t* cr, double legendY)
     // Balanced inversion symbol - a small colored square with the
     // same chevron used on the karyogram itself
     // --------------------------------------------------
-    const double inversionX = 600.0;
+    const double inversionX = itemStart[2] + 8.0;
     const double inversionSize = 16.0;
 
     cairo_new_path(cr);
@@ -573,7 +605,29 @@ void Karyogram::drawSDRlegend(cairo_t* cr, double legendY)
     // --------------------------------------------------
     // ecDNA symbol - same ring shape used on the karyogram itself
     // --------------------------------------------------
-    const double ecDNAX = 850.0;
+    // --------------------------------------------------
+    // Moved segment symbol - a short piece of chromosome with the red hooked arrow used on the karyogram
+    // --------------------------------------------------
+    const double movedBarX = itemStart[3] + 12.0;
+    const double movedBarWidth = 8.0;
+    const double movedBarHeight = 30.0;
+
+    cairo_new_path(cr);
+    cairo_set_source_rgb(cr, chromosomeColor.r, chromosomeColor.g, chromosomeColor.b);
+    cairo_rectangle(cr, movedBarX, legendCenterY - movedBarHeight / 2.0, movedBarWidth, movedBarHeight);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgb(cr, 0.1, 0.1, 0.1);
+    cairo_set_line_width(cr, 1.0);
+    cairo_stroke(cr);
+
+    drawMovedSegmentArrow(cr, movedBarX, legendCenterY + 8.0, legendCenterY - 8.0, 12.0, 1.5, 6.0, 4.0);
+
+    cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+    cairo_move_to(cr, movedBarX + movedBarWidth + 10.0, textBaseline);
+    cairo_show_text(cr, "Moved Segment");
+
+
+    const double ecDNAX = itemStart[4] + 14.0;
     const double ecDNADiameter = 28.0;
 
     cairo_new_path(cr);

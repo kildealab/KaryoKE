@@ -32,6 +32,9 @@ struct PaintedSegment
     double centromereStartFraction;
     double centromereEndFraction;
     bool insideInversion = false;               // White gap of a long deletion inside an inverted segment: one chevron spans the reversed pieces on both sides of it
+    int oldStrandID = -1;                       // Original strand and positions (Mbp) of the piece, used to find pieces moved within their own chromosome. -1 = not known/white gap
+    double oldStartPosition = 0.0;
+    double oldEndPosition = 0.0;
 };
 
 
@@ -151,7 +154,8 @@ private:
     // Helper functions to build the mutated segments onto the original chromosome strands, adjusting the color depending on the origin of the mutation, or white for deletions
     std::vector<PaintedSegment> buildPaintedSegments(const SDRdataRecord& record, bool humanGenome, const SDRmasterHeader& masterHeader);
     std::vector<PaintedSegment> buildDeletionRemainingSegments(const SDRdataRecord& record, int homeOldStrandID, bool humanGenome, const SDRmasterHeader& masterHeader);
-    std::vector<PaintedSegment> buildMixedStrandSegmentsWithGaps(const SDRdataRecord& record, int homeOldStrandID, bool humanGenome, const SDRmasterHeader& masterHeader, double& outTotalLengthMbp);
+    // movedPiecesLayout: single-strand record with pieces moved within the chromosome, see buildDeletionRemainingSegments
+    std::vector<PaintedSegment> buildMixedStrandSegmentsWithGaps(const SDRdataRecord& record, int homeOldStrandID, bool humanGenome, const SDRmasterHeader& masterHeader, double& outTotalLengthMbp, bool movedPiecesLayout = false);
 
     // The main draw chromosome function, accounting for individual chromosome sizes and centromere ranges and locations.
     void drawChromosome(cairo_t* cr, double x, double y, double height, double width, RGB color, double centromereStart, double centromereEnd, bool dashedOutline = false);
@@ -176,6 +180,8 @@ private:
     void drawSingleStrandBreakMarker(cairo_t* cr, double x, double y, double markerLength);
     // Draw symbol for inverted segments arising from mutations in the SDR file
     void drawInversionChevron(cairo_t* cr, double centerX, double topY, double bottomY, double width);
+    // Draw the red hooked arrow of an intra-chromosomal move, left of a chromosome edge: from fromY (where the piece was cut out) to toY (middle of the moved piece).
+    void drawMovedSegmentArrow(cairo_t* cr, double edgeX, double fromY, double toY, double bulge, double lineWidth, double headLength, double headHalfWidth);
     // Draw symbol for ecDNA mutated segments found in SDR file.
     void drawCircularFragment(cairo_t* cr, double centerX, double centerY, double diameter, RGB color);
     // Draw ecDNA mutated segment combined from multiple foreign strands in SDR file
