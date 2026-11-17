@@ -147,6 +147,133 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& subHeader, int numOriginalS
     SDRsubHeader cleaned = subHeader;
     std::set<int> excisedRecordIDs;							// Excised indel partners, removed once every record is processed
     std::map<std::pair<int, std::size_t>, std::size_t> insertionOnlySites;		// {newStrandID, index of the piece after the site in the cleaned record} -> its insertion-only indel
+    std::map<int, std::vector<std::pair<double, double>>> smallInversions;		// Per strand, the stretches flipped in place by a small inversion (not indels)
+
+    // MOVED small pieces (Samy, 2026-11-17): the 100 bp threshold applies only to copy-number-altering mutations, so balanced rearrangements of small pieces
+    // are not indels:
+    //  - a small reciprocal exchange between two chromosomes (each receives a < 100 bp piece cut out of the other) is a balanced translocation of any size;
+    //  - a small piece cut out of a chromosome and put back elsewhere in the same chromosome is an intra-chromosomal move (complex genomic rearrangement).
+    // A small piece is cut out when its strand is rearranged in this cell (it has pieces of 100 bp or more in rearranged records) and none of those pieces
+    // covers it. Bases copied from an intact chromosome, or from a part of a rearranged chromosome that is still there (e.g. one-base insertions), and a
+    // one-way insertion of a cut-out piece into another chromosome (a deletion-insertion of < 100 bp) stay indels. Only small pieces sharing a record with a
+    // piece of 100 bp or more are considered, so an excised indel partner listed on its own never counts. The gap a moved piece left behind is not an indel
+    // deletion; bases lost around it (1-99) still are.
+    std::map<int, std::vector<std::pair<double, double>>> largeCoverage;		// Per strand, the pieces of 100 bp or more over all rearranged records
+    std::map<int, std::vector<std::pair<double, double>>> movedPieces;		// Per strand, the moved small pieces (low, high)
+
+    for (const SDRdataRecord& record : subHeader.dataRecords)
+    {
+        if (!isRearrangementCandidate(record.newStrandID, numOriginalStrands))
+        {
+            continue;
+        }
+
+        for (const SDRfragment& fragment : record.fragments)
+        {
+            if (!isIndelSizedFragment(fragment))
+            {
+                largeCoverage[fragment.oldStrandID].emplace_back(std::min(fragment.oldStartPosition, fragment.oldEndPosition), std::max(fragment.oldStartPosition, fragment.oldEndPosition));
+            }
+        }
+    }
+
+    {
+        struct CutOutPiece
+        {
+            int strandID;
+            int hostStrandID;							// Strand of the nearest piece of 100 bp or more listed before it (after it at the start of a record)
+            double low;
+            double high;
+        };
+
+        std::vector<CutOutPiece> cutOut;
+
+        for (const SDRdataRecord& record : subHeader.dataRecords)
+        {
+            if (!isRearrangementCandidate(record.newStrandID, numOriginalStrands))
+            {
+                continue;
+            }
+
+            for (std::size_t k = 0; k < record.fragments.size(); ++k)
+            {
+                const SDRfragment& fragment = record.fragments[k];
+                const auto coverage = largeCoverage.find(fragment.oldStrandID);
+
+                if (!isIndelSizedFragment(fragment) || coverage == largeCoverage.end())
+                {
+                    continue;
+                }
+
+                const double low = std::min(fragment.oldStartPosition, fragment.oldEndPosition);
+                const double high = std::max(fragment.oldStartPosition, fragment.oldEndPosition);
+
+                if (std::any_of(coverage->second.begin(), coverage->second.end(), [&](const std::pair<double, double>& piece) { return piece.first < high && piece.second > low; }))
+                {
+                    continue;							// Its bases are still in place: a copy
+                }
+
+                int hostStrandID = -1;
+
+                for (std::size_t j = k; j-- > 0 && hostStrandID == -1;)
+                {
+                    hostStrandID = isIndelSizedFragment(record.fragments[j]) ? -1 : record.fragments[j].oldStrandID;
+                }
+
+                for (std::size_t j = k + 1; j < record.fragments.size() && hostStrandID == -1; ++j)
+                {
+                    hostStrandID = isIndelSizedFragment(record.fragments[j]) ? -1 : record.fragments[j].oldStrandID;
+                }
+
+                if (hostStrandID != -1)
+                {
+                    cutOut.push_back({fragment.oldStrandID, hostStrandID, low, high});
+                }
+            }
+        }
+
+        for (const CutOutPiece& piece : cutOut)
+        {
+            const bool withinOwnStrand = piece.hostStrandID == piece.strandID;
+            const bool reciprocal = std::any_of(cutOut.begin(), cutOut.end(), [&](const CutOutPiece& other)
+                                                { return other.strandID == piece.hostStrandID && other.hostStrandID == piece.strandID; });
+
+            if (withinOwnStrand || reciprocal)
+            {
+                movedPieces[piece.strandID].emplace_back(piece.low, piece.high);
+            }
+        }
+    }
+
+    auto isMovedPiece = [&](const SDRfragment& fragment)
+    {
+        const auto moved = movedPieces.find(fragment.oldStrandID);
+        const double low = std::min(fragment.oldStartPosition, fragment.oldEndPosition);
+        const double high = std::max(fragment.oldStartPosition, fragment.oldEndPosition);
+        return moved != movedPieces.end() && std::any_of(moved->second.begin(), moved->second.end(), [&](const std::pair<double, double>& piece) { return piece.first == low && piece.second == high; });
+    };
+
+    // Bases of moved small pieces of strandID lying in the gap between gapLow and gapHigh (the bases strictly between them).
+    auto movedBasesInGap = [&](int strandID, double gapLow, double gapHigh) -> long long
+    {
+        const auto moved = movedPieces.find(strandID);
+        long long bases = 0;
+
+        if (moved == movedPieces.end())
+        {
+            return 0;
+        }
+
+        for (const std::pair<double, double>& piece : moved->second)
+        {
+            if (basesBetween(gapLow, piece.first) >= 0 && basesBetween(piece.second, gapHigh) >= 0)
+            {
+                bases += basesBetween(piece.first, piece.second) + 1;
+            }
+        }
+
+        return bases;
+    };
 
     // The record listing the deleted bases [gapLow, gapHigh] of strandID on their own (see above), or -1.
     auto findExcisedPartner = [&](int strandID, double gapLow, double gapHigh) -> int
@@ -212,7 +339,50 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& subHeader, int numOriginalS
                 ++runEnd;
             }
 
-            const bool insertion = runEnd > i && runEnd < original.size() && !isIndelSizedFragment(kept.back()) && insertedBases <= indelMaxBases;
+            // A small piece flipped in place between two pieces of its own strand (they end and start where it starts and ends, within one base) is a small
+            // inversion, not an indel: it stays in the record and is scored as a balanced inversion (Samy, 2026-11-17, e.g. 1/0/141.673393,
+            // 1/141.673402/141.673393, 1/141.673402/171.472755).
+            if (runEnd == i + 1 && runEnd < original.size())
+            {
+                const SDRfragment& before = kept.back();
+                const SDRfragment& piece = original[i];
+                const SDRfragment& after = original[runEnd];
+                const bool beforeReversed = before.oldStartPosition > before.oldEndPosition;
+                const bool pieceReversed = piece.oldStartPosition > piece.oldEndPosition;
+                const bool afterReversed = after.oldStartPosition > after.oldEndPosition;
+                const double gapLow = std::min(before.oldEndPosition, after.oldStartPosition);
+                const double gapHigh = std::max(before.oldEndPosition, after.oldStartPosition);
+
+                // 1-99 bases lost at either breakpoint are an indel deletion each, on top of the balanced inversion (Samy, 2026-11-17).
+                const double pieceLow = std::min(piece.oldStartPosition, piece.oldEndPosition);
+                const double pieceHigh = std::max(piece.oldStartPosition, piece.oldEndPosition);
+                const long long lostBelow = basesBetween(gapLow, pieceLow) - 1;
+                const long long lostAbove = basesBetween(pieceHigh, gapHigh) - 1;
+
+                if (before.oldStrandID == piece.oldStrandID && after.oldStrandID == piece.oldStrandID && beforeReversed == afterReversed && pieceReversed != beforeReversed
+                    && !isIndelSizedFragment(before) && !isIndelSizedFragment(after)
+                    && lostBelow >= -1 && lostBelow <= indelMaxBases && lostAbove >= -1 && lostAbove <= indelMaxBases)
+                {
+                    if (indels && lostBelow > 0)
+                    {
+                        indels->push_back({piece.oldStrandID, record.newStrandID, gapLow, static_cast<int>(lostBelow), 0, -1});
+                    }
+
+                    if (indels && lostAbove > 0)
+                    {
+                        indels->push_back({piece.oldStrandID, record.newStrandID, pieceHigh, static_cast<int>(lostAbove), 0, -1});
+                    }
+
+                    kept.push_back(piece);
+                    kept.push_back(after);
+                    smallInversions[piece.oldStrandID].emplace_back(gapLow, gapHigh);
+                    i = runEnd + 1;
+                    continue;
+                }
+            }
+
+            const bool runHasMovedPiece = std::any_of(original.begin() + static_cast<long>(i), original.begin() + static_cast<long>(runEnd), [&](const SDRfragment& fragment) { return isMovedPiece(fragment); });
+            const bool insertion = runEnd > i && runEnd < original.size() && !isIndelSizedFragment(kept.back()) && insertedBases <= indelMaxBases && !runHasMovedPiece;
 
             if (runEnd > i && !insertion)						// Small pieces that are not a flanked indel insertion stay as they are.
             {
@@ -234,9 +404,13 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& subHeader, int numOriginalS
             // Bases missing between the two pieces in reading direction; only meaningful for the same strand and orientation. The next base
             // (distance 1) is touching, and so is a shared position (distance 0, how the other mutation types list a clean break).
             const long long distance = leftReversed ? basesBetween(right.oldStartPosition, left.oldEndPosition) : basesBetween(left.oldEndPosition, right.oldStartPosition);
-            const long long deletedBases = std::max(0LL, distance - 1);
+            const long long gapBases = std::max(0LL, distance - 1);
+            const long long movedOut = (left.oldStrandID == right.oldStrandID && gapBases > 0)
+                                       ? movedBasesInGap(left.oldStrandID, leftReversed ? right.oldStartPosition : left.oldEndPosition, leftReversed ? left.oldEndPosition : right.oldStartPosition) : 0;
+            const long long deletedBases = std::max(0LL, gapBases - movedOut);	// A moved small piece left this gap: only the bases lost around it count
             const bool joinable = left.oldStrandID == right.oldStrandID && leftReversed == rightReversed && !isIndelSizedFragment(left) && !isIndelSizedFragment(right)
-                                  && distance >= 0 && deletedBases <= indelMaxBases && (deletedBases > 0 || insertion);
+                                  && distance >= 0 && gapBases <= indelMaxBases && (gapBases > 0 || insertion) && movedOut == 0;
+            const bool lostAroundMovedPiece = movedOut > 0 && deletedBases > 0 && deletedBases <= indelMaxBases && leftReversed == rightReversed;
 
             // Bases lost at a breakpoint the reading does not carry on through (Samy, 2026-11-09): the orientation changes, as at either end of an inversion,
             // or a reversed piece is followed by the reversed piece above it (two touching inversions). The two ends that were joined in the original strand are
@@ -265,18 +439,26 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& subHeader, int numOriginalS
                 const double to = (firstReversed && !secondReversed) ? second.oldStartPosition : second.oldEndPosition;
                 const long long breakDistance = basesBetween(from, to);
 
-                if (breakDistance < 2 || breakDistance - 1 > indelMaxBases)
+                const long long lost = breakDistance - 1 - movedBasesInGap(first.oldStrandID, std::min(from, to), std::max(from, to));
+
+                if (breakDistance < 2 || lost < 1 || lost > indelMaxBases)
                 {
                     return false;
                 }
 
-                breakpointLostBases = breakDistance - 1;
+                breakpointLostBases = lost;
                 breakpointLow = from;
                 breakpointHigh = to;
                 return true;
             };
 
-            if (!joinable && left.oldStrandID == right.oldStrandID && !isIndelSizedFragment(left) && !isIndelSizedFragment(right))
+            if (lostAroundMovedPiece)
+            {
+                breakpointLostBases = deletedBases;
+                breakpointLow = leftReversed ? right.oldStartPosition : left.oldEndPosition;
+                breakpointHigh = leftReversed ? left.oldEndPosition : right.oldStartPosition;
+            }
+            else if (!joinable && left.oldStrandID == right.oldStrandID && !isIndelSizedFragment(left) && !isIndelSizedFragment(right))
             {
                 const SDRfragment flippedFirst{right.oldStrandID, right.oldEndPosition, right.oldStartPosition, right.hasCentromere};
                 const SDRfragment flippedSecond{left.oldStrandID, left.oldEndPosition, left.oldStartPosition, left.hasCentromere};
@@ -392,8 +574,9 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& subHeader, int numOriginalS
                 const PooledPiece& lower = pieces[k];
                 const PooledPiece& upper = pieces[k + 1];
                 const long long distance = basesBetween(lower.high, upper.low);
+                const long long lostBases = distance - 1 - movedBasesInGap(strandID, lower.high, upper.low);	// A moved small piece left part of this gap
 
-                if (distance < 2 || distance - 1 > indelMaxBases)
+                if (distance < 2 || lostBases < 1 || lostBases > indelMaxBases)
                 {
                     continue;
                 }
@@ -401,7 +584,12 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& subHeader, int numOriginalS
                 const std::size_t apart = (lower.index > upper.index) ? lower.index - upper.index : upper.index - lower.index;
                 const bool neighboursInRecord = lower.newStrandID == upper.newStrandID && (apart == 1 || (!lower.linear && apart + 1 == lower.recordSize));
 
-                if (neighboursInRecord)
+                const auto inverted = smallInversions.find(strandID);
+                const bool filledBySmallInversion = inverted != smallInversions.end()
+                    && std::any_of(inverted->second.begin(), inverted->second.end(), [&](const std::pair<double, double>& stretch)
+                       { return std::llabs(basesBetween(stretch.first, lower.high)) <= 1 && std::llabs(basesBetween(upper.low, stretch.second)) <= 1; });
+
+                if (neighboursInRecord || filledBySmallInversion)
                 {
                     continue;
                 }
@@ -431,7 +619,7 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& subHeader, int numOriginalS
 
                     if (!merged && it != insertionOnlySites.end() && (*indels)[it->second].deletedBases == 0)
                     {
-                        (*indels)[it->second].deletedBases = static_cast<int>(distance - 1);
+                        (*indels)[it->second].deletedBases = static_cast<int>(lostBases);
                         (*indels)[it->second].excisedStrandID = excisedStrandID;
                         merged = true;
                     }
@@ -439,7 +627,7 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& subHeader, int numOriginalS
 
                 if (!merged)
                 {
-                    indels->push_back({strandID, lower.newStrandID, lower.high, static_cast<int>(distance - 1), 0, excisedStrandID});
+                    indels->push_back({strandID, lower.newStrandID, lower.high, static_cast<int>(lostBases), 0, excisedStrandID});
                 }
             }
         }
@@ -1496,7 +1684,10 @@ inline std::set<int> collectHigherOrderStrands(const SDRsubHeader& subHeader, in
 
     for (const SDRcomplexRearrangementEvent& event : detectComplexGenomicRearrangements(subHeader, numOriginalStrands))	// Silences the same simpler events chromothripsis did
     {
-        strands.insert(event.involvedStrandIDs.begin(), event.involvedStrandIDs.end());
+        if (event.regions.empty())							// One limited to stretches of its chromosome: see collectHigherOrderRegions()
+        {
+            strands.insert(event.involvedStrandIDs.begin(), event.involvedStrandIDs.end());
+        }
     }
 
     const SDRmasterHeader emptyHeader{};
@@ -1506,6 +1697,50 @@ inline std::set<int> collectHigherOrderStrands(const SDRsubHeader& subHeader, in
     }
 
     return strands;
+}
+
+
+// Stretches of single chromosomes claimed by a complex genomic rearrangement limited to them (see outOfOrderRegions()): strand ID -> (low, high) in Mbp.
+inline std::map<int, std::vector<std::pair<double, double>>> collectHigherOrderRegions(const SDRsubHeader& subHeader, int numOriginalStrands)
+{
+    std::map<int, std::vector<std::pair<double, double>>> regions;
+
+    for (const SDRcomplexRearrangementEvent& event : detectComplexGenomicRearrangements(subHeader, numOriginalStrands))
+    {
+        for (int strandID : event.involvedStrandIDs)
+        {
+            regions[strandID].insert(regions[strandID].end(), event.regions.begin(), event.regions.end());
+        }
+    }
+
+    return regions;
+}
+
+// Does the stretch a-b of strandID overlap a stretch claimed by a complex genomic rearrangement (touching ends do not count)?
+inline bool insideHigherOrderRegion(const std::map<int, std::vector<std::pair<double, double>>>& regions, int strandID, double a, double b)
+{
+    const auto found = regions.find(strandID);
+
+    if (found == regions.end())
+    {
+        return false;
+    }
+
+    const double low = std::min(a, b);
+    const double high = std::max(a, b);
+
+    for (const std::pair<double, double>& region : found->second)
+    {
+        const bool overlaps = low < region.second - svToleranceMbp && high > region.first + svToleranceMbp;
+        const bool contained = low >= region.first - svToleranceMbp && high <= region.second + svToleranceMbp;	// Pieces smaller than the tolerance
+
+        if (overlaps || contained)
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 
@@ -1677,7 +1912,9 @@ inline std::vector<SDRdeletionEvent> detectDeletions(const SDRsubHeader& subHead
     if (applyHierarchy)									// Chromothripsis / chromoplexy silence every simple deletion on their strands.
     {
         const std::set<int> silenced = collectHigherOrderStrands(subHeader, numOriginalStrands);
-        deletions.erase(std::remove_if(deletions.begin(), deletions.end(), [&](const SDRdeletionEvent& e) { return silenced.count(e.oldStrandID) > 0; }), deletions.end());
+        const auto regions = collectHigherOrderRegions(subHeader, numOriginalStrands);
+        deletions.erase(std::remove_if(deletions.begin(), deletions.end(), [&](const SDRdeletionEvent& e)
+                        { return silenced.count(e.oldStrandID) > 0 || insideHigherOrderRegion(regions, e.oldStrandID, e.deletionStart, e.deletionEnd); }), deletions.end());
     }
 
     return deletions;
@@ -1837,7 +2074,9 @@ inline std::vector<SDRinversionEvent> detectInversions(const SDRsubHeader& subHe
     if (applyHierarchy)
     {
         const std::set<int> silenced = collectHigherOrderStrands(subHeader, numOriginalStrands);
-        inversions.erase(std::remove_if(inversions.begin(), inversions.end(), [&](const SDRinversionEvent& e) { return silenced.count(e.oldStrandID) > 0; }), inversions.end());
+        const auto regions = collectHigherOrderRegions(subHeader, numOriginalStrands);
+        inversions.erase(std::remove_if(inversions.begin(), inversions.end(), [&](const SDRinversionEvent& e)
+                         { return silenced.count(e.oldStrandID) > 0 || insideHigherOrderRegion(regions, e.oldStrandID, e.inversionStart, e.inversionEnd); }), inversions.end());
     }
 
     return inversions;
@@ -2585,11 +2824,16 @@ inline std::vector<SDRecDNAevent> detectECDNA(const SDRsubHeader& subHeader, int
     {
         const std::set<int> higherOrderStrands = collectHigherOrderStrands(subHeader, numOriginalStrands);	// Chromothripsis and chromoplexy strands
 
+        const auto regions = collectHigherOrderRegions(subHeader, numOriginalStrands);	// Stretches of one chromosome claimed by a complex genomic rearrangement
+
         ecDNAevents.erase(std::remove_if(ecDNAevents.begin(), ecDNAevents.end(), [&](const SDRecDNAevent& e)
         {
-            for (int strandID : e.oldStrandIDs)
+            for (std::size_t i = 0; i < e.oldStrandIDs.size(); ++i)
             {
-                if (higherOrderStrands.count(strandID))
+                const int strandID = e.oldStrandIDs[i];
+
+                if (higherOrderStrands.count(strandID)
+                    || (i < e.ecDNAsegments.size() && insideHigherOrderRegion(regions, strandID, e.ecDNAsegments[i].first, e.ecDNAsegments[i].second)))
                 {
                     return true;
                 }
@@ -2782,7 +3026,10 @@ inline std::vector<SDRdeletionInversionEvent> detectDeletionInversions(const SDR
     if (applyHierarchy)
     {
         const std::set<int> silenced = collectHigherOrderStrands(subHeader, numOriginalStrands);
-        delInvs.erase(std::remove_if(delInvs.begin(), delInvs.end(), [&](const SDRdeletionInversionEvent& e) { return silenced.count(e.oldStrandID) > 0; }), delInvs.end());
+        const auto regions = collectHigherOrderRegions(subHeader, numOriginalStrands);
+        delInvs.erase(std::remove_if(delInvs.begin(), delInvs.end(), [&](const SDRdeletionInversionEvent& e)
+                      { return silenced.count(e.oldStrandID) > 0 || insideHigherOrderRegion(regions, e.oldStrandID, e.deletionStart, e.deletionEnd)
+                               || insideHigherOrderRegion(regions, e.oldStrandID, e.inversionStart, e.inversionEnd); }), delInvs.end());
     }
 
     return delInvs;
@@ -3457,8 +3704,9 @@ inline std::vector<SDRchromoplexyEvent> detectChromoplexy(const SDRsubHeader& su
 
 // True when pieces of ONE chromosome, read in the order given, keep their original order along it: forward pieces follow each other up the chromosome, and a run of
 // consecutive reversed pieces is one inverted block whose pieces follow each other down the chromosome. Gaps (deletions) are allowed. Simple deletions and inversions,
-// however many, keep this order. Also tries the pieces read from the other end, since a chromosome can be listed from either end.
-inline bool piecesInOriginalOrder(const std::vector<SDRfragment>& pieces)
+// however many, keep this order. Also tries the pieces read from the other end, since a chromosome can be listed from either end (unless allowOtherEnd is false:
+// a stretch between pieces that stayed in place has its reading direction fixed by them).
+inline bool piecesInOriginalOrder(const std::vector<SDRfragment>& pieces, bool allowOtherEnd = true)
 {
     const double tolerance = svToleranceMbp;					// Fewer than 100 bases missing = touching (see svToleranceMbp)
 
@@ -3484,13 +3732,8 @@ inline bool piecesInOriginalOrder(const std::vector<SDRfragment>& pieces)
 
             while (j < fragments.size() && isReversedFragment(fragments[j]))
             {
-                // A reversed piece lying wholly above this block (e.g. 7/80/50 then 7/120/80) is a second inversion next to the first, each piece flipped
-                // in place, not part of the same inverted block: it starts its own block, which the check below keeps in order.
-                if (fragments[j].oldEndPosition >= fragments[i].oldStartPosition - tolerance)
-                {
-                    break;
-                }
-
+                // A reversed piece lying above the previous one (e.g. 7/80/50 then 7/120/80, two touching inversions) breaks the order: two touching
+                // inversions take 3 double-strand breaks and are one complex genomic rearrangement, not two inversions (Samy, 2026-11-17).
                 if (fragments[j].oldStartPosition > fragments[j - 1].oldEndPosition + tolerance)	// Inside the block, each piece lies below the previous one
                 {
                     return false;
@@ -3518,7 +3761,7 @@ inline bool piecesInOriginalOrder(const std::vector<SDRfragment>& pieces)
         std::swap(fragment.oldStartPosition, fragment.oldEndPosition);
     }
 
-    return inOrder(pieces) || inOrder(flipped);
+    return inOrder(pieces) || (allowOtherEnd && inOrder(flipped));
 }
 
 
@@ -3540,6 +3783,118 @@ inline bool isNonSequentialRearrangement(const SDRdataRecord& record, std::size_
     }
 
     return !piecesInOriginalOrder(record.fragments);
+}
+
+
+// True when a linear record of ONE chromosome has two touching inversions: two consecutive reversed pieces, the second lying just above the first (fewer than
+// 100 bases apart), e.g. 7/0/50, 7/80/50, 7/120/80, 7/120/168.8. They take 3 double-strand breaks, so they are one complex genomic rearrangement, not two
+// balanced inversions (Samy, 2026-11-17), however few pieces the record has.
+inline bool hasTouchingInversions(const SDRdataRecord& record)
+{
+    if (!record.linear)
+    {
+        return false;
+    }
+
+    for (const SDRfragment& fragment : record.fragments)
+    {
+        if (fragment.oldStrandID != record.fragments.front().oldStrandID)
+        {
+            return false;
+        }
+    }
+
+    // Read from either end of the chromosome: listed from the other end, the same pair reads 7/80/120, 7/50/80 (two forward pieces, the second just below).
+    for (std::size_t k = 0; k + 1 < record.fragments.size(); ++k)
+    {
+        const SDRfragment& first = record.fragments[k];
+        const SDRfragment& second = record.fragments[k + 1];
+        const bool bothReversed = isReversedFragment(first) && isReversedFragment(second);
+        const bool bothForward = !isReversedFragment(first) && !isReversedFragment(second);
+
+        if (bothReversed && std::llabs(basesBetween(first.oldStartPosition, second.oldEndPosition)) <= indelMaxBases + 1)
+        {
+            return true;
+        }
+
+        if (bothForward && std::llabs(basesBetween(second.oldEndPosition, first.oldStartPosition)) <= indelMaxBases + 1)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
+// Independent rearrangements within one chromosome (Samy, 2026-11-17): two rearrangements separated by an intact forward piece sitting in its original
+// place (every piece listed before it lies below it, every piece after it lies above it) do not share breakpoints and are unrelated, so each is scored on
+// its own (chromothripsis and chromoplexy excepted). Such pieces split a single-chromosome record into stretches; returns the span (low, high in Mbp) of
+// every stretch whose pieces are out of their original order (see piecesInOriginalOrder()), e.g. 1/0/141.67, 1/141.68/141.67, 1/141.68/171.47,
+// 1/171.48/171.49, 1/171.48/171.47, 1/171.49/263.2 gives only 171.47-171.49 (the two swapped pieces); the small inversion before it is scored on its own.
+inline std::vector<std::pair<double, double>> outOfOrderRegions(const SDRdataRecord& record)
+{
+    const double tolerance = svToleranceMbp;
+    const std::vector<SDRfragment>& pieces = record.fragments;
+    std::vector<std::pair<double, double>> regions;
+
+    const auto lowOf = [](const SDRfragment& fragment) { return std::min(fragment.oldStartPosition, fragment.oldEndPosition); };
+    const auto highOf = [](const SDRfragment& fragment) { return std::max(fragment.oldStartPosition, fragment.oldEndPosition); };
+
+    std::vector<bool> inPlace(pieces.size(), false);
+
+    for (std::size_t k = 0; k < pieces.size(); ++k)
+    {
+        if (isReversedFragment(pieces[k]))
+        {
+            continue;
+        }
+
+        bool placed = true;
+
+        for (std::size_t j = 0; j < pieces.size() && placed; ++j)
+        {
+            placed = (j < k) ? highOf(pieces[j]) <= lowOf(pieces[k]) + tolerance : (j == k || lowOf(pieces[j]) >= highOf(pieces[k]) - tolerance);
+        }
+
+        inPlace[k] = placed;
+    }
+
+    for (std::size_t start = 0; start < pieces.size(); )
+    {
+        if (inPlace[start])
+        {
+            ++start;
+            continue;
+        }
+
+        std::size_t end = start;
+        while (end < pieces.size() && !inPlace[end])
+        {
+            ++end;
+        }
+
+        const std::vector<SDRfragment> stretch(pieces.begin() + static_cast<long>(start), pieces.begin() + static_cast<long>(end));
+        const bool wholeRecord = start == 0 && end == pieces.size();		// No piece stayed in place: the record may be listed from either end
+
+        if (!piecesInOriginalOrder(stretch, wholeRecord))
+        {
+            double low = lowOf(stretch.front());
+            double high = highOf(stretch.front());
+
+            for (const SDRfragment& fragment : stretch)
+            {
+                low = std::min(low, lowOf(fragment));
+                high = std::max(high, highOf(fragment));
+            }
+
+            regions.emplace_back(low, high);
+        }
+
+        start = end;
+    }
+
+    return regions;
 }
 
 
@@ -3790,7 +4145,7 @@ inline std::vector<SDRchromothripsisEvent> detectShatteredClusters(const SDRsubH
             }
 
             hasShatteredExchange = hasShatteredExchange || hasShatteredExchangedMaterial(record);
-            hasNonSequentialRecord = hasNonSequentialRecord || isNonSequentialRearrangement(record);
+            hasNonSequentialRecord = hasNonSequentialRecord || isNonSequentialRearrangement(record) || hasTouchingInversions(record);
             hasGapInRearrangedSegment = hasGapInRearrangedSegment || hasGapInsideRearrangedSegment(record);
         }
 
@@ -3803,6 +4158,36 @@ inline std::vector<SDRchromothripsisEvent> detectShatteredClusters(const SDRsubH
         if (complexRearrangements ? !isComplexRearrangement : !isChromothripsis)
         {
             continue;
+        }
+
+        // A one-chromosome complex genomic rearrangement whose only reason is pieces out of order is scored once per independent out-of-order stretch
+        // (see outOfOrderRegions()), and silences only events inside its stretch.
+        if (complexRearrangements && strandSet.size() == 1 && !hasShatteredExchange && !hasGapInRearrangedSegment)
+        {
+            std::vector<std::pair<double, double>> regions;
+
+            for (const SDRdataRecord& record : subHeader.dataRecords)
+            {
+                if (majorNewStrandIDs.count(record.newStrandID) && (isNonSequentialRearrangement(record) || hasTouchingInversions(record)))
+                {
+                    const std::vector<std::pair<double, double>> recordRegions = outOfOrderRegions(record);
+                    regions.insert(regions.end(), recordRegions.begin(), recordRegions.end());
+                }
+            }
+
+            if (!regions.empty())
+            {
+                for (const std::pair<double, double>& region : regions)
+                {
+                    SDRchromothripsisEvent event{};
+                    event.involvedStrandIDs = std::vector<int>(strandSet.begin(), strandSet.end());
+                    event.contributingNewStrandIDs = std::vector<int>(majorNewStrandIDs.begin(), majorNewStrandIDs.end());
+                    event.totalFragmentCount = totalFragmentCount;
+                    event.regions = {region};
+                    chromothripsisEvents.push_back(event);
+                }
+                continue;
+            }
         }
 
 	// Checks passed, store the chromothripsis (or complex genomic rearrangement) event
@@ -4032,6 +4417,21 @@ inline std::map<int, std::vector<std::pair<std::string, int>>> countMutationsPer
         }
         for (const auto& e : complexRearrangements)
         {
+            if (!e.regions.empty())							// Limited to stretches of the chromosome: only their pieces, reversals and gaps are accounted for
+            {
+                explainRecords(e.contributingNewStrandIDs, e.involvedStrandIDs, false);
+
+                for (int strandID : e.involvedStrandIDs)
+                {
+                    for (const std::pair<double, double>& region : e.regions)
+                    {
+                        explainedReversals.push_back(range(strandID, region.first, region.second));
+                        explainedGaps.push_back(range(strandID, region.first, region.second));
+                    }
+                }
+                continue;
+            }
+
             explainRecords(e.contributingNewStrandIDs, e.involvedStrandIDs, true);
             wholeStrandEvents.insert(e.involvedStrandIDs.begin(), e.involvedStrandIDs.end());
         }
@@ -4087,7 +4487,8 @@ inline std::map<int, std::vector<std::pair<std::string, int>>> countMutationsPer
         {
             for (const StrandRange& r : ranges)
             {
-                if (static_cast<int>(r[0]) == strandID && r[1] < high - tolerance && low < r[2] - tolerance)
+                // Overlapping by more than the tolerance, or lying inside the range (a piece shorter than the tolerance, e.g. a 10-base inversion)
+                if (static_cast<int>(r[0]) == strandID && ((r[1] < high - tolerance && low < r[2] - tolerance) || (r[1] <= low + tolerance && high <= r[2] + tolerance)))
                 {
                     return true;
                 }
@@ -4257,3 +4658,4 @@ inline std::size_t countComplexGenomicRearrangements(const SDRsubHeader& rawSubH
 
 
 #endif
+

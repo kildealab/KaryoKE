@@ -236,6 +236,8 @@ struct SDRchromothripsisEvent
     std::vector<int> involvedStrandIDs;         // The 1-2 old strand IDs in this cluster
     std::vector<int> contributingNewStrandIDs;  // newStrandIDs of every rearranged record touching these strand(s)
     int totalFragmentCount;                     // Total data-field-3 fragments summed across all contributing records
+    std::vector<std::pair<double, double>> regions; // Complex genomic rearrangement of ONE chromosome limited to these stretches (Mbp), see outOfOrderRegions();
+                                                    // empty = the whole cluster. Only events overlapping a stretch are silenced, others on the strand stay.
 };
 
 // A complex genomic rearrangement is found on the same 1-2 strand clusters as chromothripsis (see detectComplexGenomicRearrangements()),
