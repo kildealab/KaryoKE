@@ -26,6 +26,7 @@ struct SDRdataRecord
     int newStrandID;					// SDR data field 2
     std::vector<SDRfragment> fragments;			// SDR data field 3, can contain multiple subfields separated by ',' and each subfield contains 4 entries separated by '/'.
     bool linear;
+    bool flippedToHomeOrientation = false;		// Read back from the other chromosome end by orientRecordsToHomeStrand() (pieces in reverse order, each flipped)
 };
 
 

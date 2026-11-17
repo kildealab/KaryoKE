@@ -49,8 +49,14 @@ inline int determineHomeStrandID(const SDRdataRecord& record)
         return centromereStrandID;
     }
 
-    // Zero or 2+ centromeres, fall back to the original strand-ordering convention (first fragment old strand ID appearing in the data record is the home slot).
-    return record.fragments.empty() ? -1 : record.fragments[0].oldStrandID;
+    // Zero or 2+ centromeres, fall back to the original strand-ordering convention (first fragment old strand ID appearing in the data record, as listed in
+    // the SDR file, is the home slot; a record flipped by orientRecordsToHomeStrand() lists that fragment last).
+    if (record.fragments.empty())
+    {
+        return -1;
+    }
+
+    return record.flippedToHomeOrientation ? record.fragments.back().oldStrandID : record.fragments.front().oldStrandID;
 }
 
 
@@ -142,8 +148,70 @@ inline bool isIndelSizedFragment(const SDRfragment& fragment)
 //    was a change no other type explained, so it counted as a complex genomic rearrangement. The partner may be linear or circular and listed in either
 //    orientation (Samy, 2026-11-03): an ecDNA of < 100 bp cut from an indel gap is scored as the indel deletion, not as ecDNA, and is not drawn, and so is a
 //    reversed linear piece (unlike a long deletion, whose reversed excised piece counts as foreign material).
-inline SDRsubHeader removeIndels(const SDRsubHeader& subHeader, int numOriginalStrands, std::vector<SDRindelEvent>* indels = nullptr)
+// Returns a copy of the cell with every rearranged linear record read in the orientation of its HOME strand (Samy, 2026-11-17). A chromosome can be listed
+// from either end, e.g. 2/258.1/200.067958, 2/200.06783/200.067958, 2/200.06783/145.190177, ..., 2/8.960652/0 reads chromosome 2 from its top end, so its
+// three small inversions look like forward pieces in a reversed chromosome. Such a record is flipped (pieces listed in reverse order, each piece's start
+// and end swapped) so the home strand reads from 0 Mbp up to its end: 2/0/8.960652, ..., 2/200.067958/200.06783, 2/200.067958/258.1, and only the truly
+// inverted pieces are reversed. The home strand is the strand of the piece listing the centromere (the first such piece for a dicentric, the first piece
+// when there is no centromere); the record reads from the top end when the home strand's
+// first piece lies above its last piece. Pieces of other strands are flipped with it, so their orientation is relative to the home strand. Records with a
+// single piece of the home strand (e.g. translocation derivatives), circular records and baseline records are left as they are.
+inline SDRsubHeader orientRecordsToHomeStrand(const SDRsubHeader& subHeader, int numOriginalStrands)
 {
+    SDRsubHeader oriented = subHeader;
+
+    for (SDRdataRecord& record : oriented.dataRecords)
+    {
+        if (!isRearrangementCandidate(record.newStrandID, numOriginalStrands) || !record.linear || record.fragments.empty())
+        {
+            continue;
+        }
+
+        // Home strand (Samy, 2026-11-17): the strand of the piece listing the centromere; for a dicentric, the first piece listing one. A record with no
+        // centromere falls back to the strand of its first piece, as for the karyogram slot (see the home strand convention above).
+        int homeStrandID = record.fragments.front().oldStrandID;
+
+        for (const SDRfragment& fragment : record.fragments)
+        {
+            if (fragment.hasCentromere)
+            {
+                homeStrandID = fragment.oldStrandID;
+                break;
+            }
+        }
+
+        std::vector<const SDRfragment*> homePieces;
+
+        for (const SDRfragment& fragment : record.fragments)
+        {
+            if (fragment.oldStrandID == homeStrandID && !isIndelSizedFragment(fragment))	// Inserted bases (indels) say nothing about the reading direction
+            {
+                homePieces.push_back(&fragment);
+            }
+        }
+
+        auto middle = [](const SDRfragment* fragment) { return (fragment->oldStartPosition + fragment->oldEndPosition) / 2.0; };
+
+        if (homePieces.size() < 2 || middle(homePieces.front()) <= middle(homePieces.back()))
+        {
+            continue;
+        }
+
+        std::reverse(record.fragments.begin(), record.fragments.end());
+        record.flippedToHomeOrientation = true;
+
+        for (SDRfragment& fragment : record.fragments)
+        {
+            std::swap(fragment.oldStartPosition, fragment.oldEndPosition);
+        }
+    }
+
+    return oriented;
+}
+
+inline SDRsubHeader removeIndels(const SDRsubHeader& rawSubHeader, int numOriginalStrands, std::vector<SDRindelEvent>* indels = nullptr)
+{
+    const SDRsubHeader subHeader = orientRecordsToHomeStrand(rawSubHeader, numOriginalStrands);	// Every record read from its home strand's 0 Mbp end
     SDRsubHeader cleaned = subHeader;
     std::set<int> excisedRecordIDs;							// Excised indel partners, removed once every record is processed
     std::map<std::pair<int, std::size_t>, std::size_t> insertionOnlySites;		// {newStrandID, index of the piece after the site in the cleaned record} -> its insertion-only indel
@@ -851,8 +919,10 @@ inline std::map<int, int> findDicentricAcentricHomeOverrides(const SDRsubHeader&
             continue;
         }
 
-        const int strandX = centromereStrandsInOrder[0];				// First listed centromere-bearing strand becomes home for the DICENTRIC record.
-        const int strandY = centromereStrandsInOrder[1];				// And the second listed centromere-bearing strand becomes home for the paired ACENTRIC record, once a valid match is confirmed below.
+        // First listed centromere-bearing strand (as listed in the SDR file, before orientRecordsToHomeStrand()) becomes home for the DICENTRIC record.
+        const int strandX = dicentricCandidate.flippedToHomeOrientation ? centromereStrandsInOrder[1] : centromereStrandsInOrder[0];
+        // And the second listed centromere-bearing strand becomes home for the paired ACENTRIC record, once a valid match is confirmed below.
+        const int strandY = dicentricCandidate.flippedToHomeOrientation ? centromereStrandsInOrder[0] : centromereStrandsInOrder[1];
 
         if (strandX == strandY || allStrandsInRecord.size() != 2)			// The two centromeres must come from two DIFFERENT strands, and no fragment here may reference a third strand.
         {
@@ -1031,8 +1101,8 @@ inline std::vector<SDRdicentricEvent> detectDicentrics(const SDRsubHeader& subHe
             continue;
         }
 
-        const int strandX = centromereStrandsInOrder[0];
-        const int strandY = centromereStrandsInOrder[1];
+        const int strandX = record.flippedToHomeOrientation ? centromereStrandsInOrder[1] : centromereStrandsInOrder[0];	// As listed in the SDR file
+        const int strandY = record.flippedToHomeOrientation ? centromereStrandsInOrder[0] : centromereStrandsInOrder[1];
 
         if (strandX == strandY)				// The two centromeres must come from two DIFFERENT strands.
         {
@@ -4658,4 +4728,3 @@ inline std::size_t countComplexGenomicRearrangements(const SDRsubHeader& rawSubH
 
 
 #endif
-
