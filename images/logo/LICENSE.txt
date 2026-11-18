@@ -1,0 +1,9 @@
+Copyright (c) 2026 Samy Boutros. All Rights Reserved.
+
+The logo, brand assets, and project names "Karyograms for Karyotype Errors" 
+and "KaryoKE" are the exclusive property of Samy Boutros and are NOT licensed 
+under the GNU General Public License v3.0 (GPLv3). 
+
+No permission is granted to copy, modify, distribute, or use the logo, brand assets 
+or the project name in any derivative works, forks, or commercial products 
+without explicit prior written consent from the copyright holder.
