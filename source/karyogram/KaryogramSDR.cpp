@@ -1678,6 +1678,12 @@ void Karyogram::drawPaintedFragment(			// Function to draw the individual fragme
     // The borders of a moved piece at its new place are dashed, also next to an inverted piece or a white deletion gap.
     const double junctionDash[2] = { 3.0, 2.0 };
 
+    // Boundary lines are clipped to the chromosome's own shape, so a junction inside a rounded end (a short piece next to the telomere) or at the
+    // centromere pinch never sticks out past the outline.
+    cairo_save(cr);
+    traceCapsulePath();
+    cairo_clip(cr);
+
     for (std::size_t i = 0; i + 1 < segments.size(); i++)
     {
         const bool dashed = dashedBoundary[i + 1];
@@ -1709,6 +1715,8 @@ void Karyogram::drawPaintedFragment(			// Function to draw the individual fragme
             cairo_set_dash(cr, nullptr, 0, 0.0);
         }
     }
+
+    cairo_restore(cr);
 
 
     // --------------------------------------
