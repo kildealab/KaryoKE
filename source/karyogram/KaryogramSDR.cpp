@@ -67,6 +67,22 @@ static double mixedRecordLengthWithHomeGaps(const SDRdataRecord& record, int hom
     return totalLengthMbp;
 }
 
+static bool hasPiecesMovedWithinStrand(const std::vector<SDRfragment>& fragments);
+
+// Did pieces of the home strand of a mixed record move within the chromosome (see hasPiecesMovedWithinStrand())? Foreign pieces are left out.
+static bool homePiecesMoved(const SDRdataRecord& record, int homeOldStrandID)
+{
+    std::vector<SDRfragment> home;
+    for (const SDRfragment& fragment : record.fragments)
+    {
+        if (fragment.oldStrandID == homeOldStrandID)
+        {
+            home.push_back(fragment);
+        }
+    }
+    return home.size() != record.fragments.size() && home.size() >= 2 && hasPiecesMovedWithinStrand(home);
+}
+
 static bool isSingleMixedRecordWithHomeGap(const std::vector<const SDRdataRecord*>& records, int homeOldStrandID)
 {
     if (records.size() != 1 || !records[0]->linear)
@@ -1175,6 +1191,7 @@ void Karyogram::drawPaintedFragment(			// Function to draw the individual fragme
         std::size_t first;								// First and last segment index of the block
         std::size_t last;
         bool swappedWithTrailingPiece = false;					// An inverted block whose trailing forward piece(s) were split off (see below)
+        double keyMbp = 0.0;								// Position the block is ordered by (its lowest, or the place it took, see below)
     };
 
     std::vector<bool> dashedBoundary(segments.size() + 1, false);			// Boundary k lies between segments k-1 and k
@@ -1292,6 +1309,90 @@ void Karyogram::drawPaintedFragment(			// Function to draw the individual fragme
             b += trailing.size();
         }
 
+        for (PieceBlock& block : blocks)
+        {
+            block.keyMbp = block.lowMbp;
+        }
+
+        // An inverted block drawn right before a forward piece of its strand that originally lay below it (not joined above because other pieces of the
+        // strand lie in between) also swapped places with it (Samy, 2026-11-18, chr 3 h2, see movedFragmentFlags()): it keeps the place it took, which
+        // orders it, and the forward piece gets the arrow.
+        for (std::size_t b = 0; b + 1 < blocks.size(); ++b)
+        {
+            PieceBlock& block = blocks[b];
+            const PieceBlock& next = blocks[b + 1];
+            const PaintedSegment& nextSegment = segments[next.first];
+
+            if (block.swappedWithTrailingPiece || !segments[block.first].isReversed || !segments[block.last].isReversed || next.first != next.last
+                || next.first != block.last + 1 || nextSegment.isReversed || next.strandID != block.strandID || next.highMbp > block.lowMbp + svToleranceMbp)
+            {
+                continue;
+            }
+
+            // Not when the inversion's own place is a clean cut between two pieces drawn next to each other (it was moved out from between them).
+            bool leftCleanCut = false;
+            std::size_t previousPiece = segments.size();
+            for (std::size_t k = 0; k < segments.size() && !leftCleanCut; ++k)
+            {
+                if (isWhiteColor(segments[k].color))
+                {
+                    continue;
+                }
+
+                if (previousPiece < segments.size())
+                {
+                    const PaintedSegment& above = segments[previousPiece];
+                    const PaintedSegment& below = segments[k];
+                    leftCleanCut = above.oldStrandID == block.strandID && below.oldStrandID == block.strandID && !above.isReversed && !below.isReversed
+                                   && approxEqual(std::max(above.oldStartPosition, above.oldEndPosition), block.lowMbp, svToleranceMbp)
+                                   && approxEqual(std::min(below.oldStartPosition, below.oldEndPosition), block.highMbp, svToleranceMbp);
+                }
+
+                previousPiece = k;
+            }
+
+            // And only when the strand reads on upward from the forward piece up to the inversion's upper end (see movedFragmentFlags()).
+            bool readsOnToInversion = false;
+            std::size_t current = next.first;
+            for (std::size_t k = next.first + 1; k < segments.size(); ++k)
+            {
+                if (isWhiteColor(segments[k].color))
+                {
+                    continue;
+                }
+
+                const PaintedSegment& above = segments[current];
+                const PaintedSegment& following = segments[k];
+                const double followingLow = std::min(following.oldStartPosition, following.oldEndPosition);
+
+                if (following.oldStrandID != above.oldStrandID || following.isReversed || followingLow < std::max(above.oldStartPosition, above.oldEndPosition) - svToleranceMbp)
+                {
+                    break;
+                }
+
+                if (approxEqual(followingLow, block.highMbp, svToleranceMbp))
+                {
+                    readsOnToInversion = true;
+                    break;
+                }
+
+                if (std::max(following.oldStartPosition, following.oldEndPosition) > block.lowMbp + svToleranceMbp)
+                {
+                    break;
+                }
+
+                current = k;
+            }
+
+            if (leftCleanCut || !readsOnToInversion)
+            {
+                continue;
+            }
+
+            block.swappedWithTrailingPiece = true;
+            block.keyMbp = next.lowMbp;
+        }
+
         std::map<int, std::vector<std::size_t>> blocksByStrand;
         for (std::size_t b = 0; b < blocks.size(); ++b)
         {
@@ -1336,7 +1437,7 @@ void Karyogram::drawPaintedFragment(			// Function to draw the individual fragme
                     const PieceBlock& blockC = blocks[indices[c]];
                     const double candidate = best[c] + blockWeight(blockA);
 
-                    if (blockC.lowMbp < blockA.lowMbp && candidate > best[a])
+                    if (blockC.keyMbp < blockA.keyMbp && candidate > best[a])
                     {
                         best[a] = candidate;
                         previousInRun[a] = static_cast<int>(c);
@@ -1928,7 +2029,9 @@ void Karyogram::drawStackedMutations(
                 // Mixed-strand case (material exchanged between two chromosomes), fragment positions live in different
                 // coordinate systems, so buildDeletionRemainingSegments' sorting assumption doesn't hold. Walks fragments in
                 // file order instead, inserting white gaps only between immediately-adjacent HOME-strand fragments.
-                baseSegments = buildMixedStrandSegmentsWithGaps(*baseRecord, homeOldStrandID, humanGenome, masterHeader, baseLengthMbp);
+                // Home pieces moved within the chromosome (Samy, 2026-11-18, chr 3 h2 ending in a piece of chr 4): laid out like a single-strand record with
+                // moved pieces, so deleted stretches sit where they belong and moved pieces get their arrows.
+                baseSegments = buildMixedStrandSegmentsWithGaps(*baseRecord, homeOldStrandID, humanGenome, masterHeader, baseLengthMbp, homePiecesMoved(*baseRecord, homeOldStrandID));
             }
 
             const double baseHeight = computeSDRbarHeight(baseLengthMbp, maxLengthMbp, maxRenderHeight);
@@ -2252,7 +2355,7 @@ static std::vector<bool> movedFragmentFlags(const std::vector<SDRfragment>& frag
     const auto highOf = [](const SDRfragment& fragment) { return std::max(fragment.oldStartPosition, fragment.oldEndPosition); };
     const auto reversed = [](const SDRfragment& fragment) { return fragment.oldStartPosition > fragment.oldEndPosition; };
 
-    struct Block { std::size_t first; std::size_t last; double low; double high; bool swapped; };
+    struct Block { std::size_t first; std::size_t last; double low; double high; bool swapped; double key = 0.0; };
     std::vector<Block> blocks;
 
     for (std::size_t i = 0; i < fragments.size(); ++i)
@@ -2317,6 +2420,71 @@ static std::vector<bool> movedFragmentFlags(const std::vector<SDRfragment>& frag
         b += trailing.size();
     }
 
+    for (Block& block : blocks)
+    {
+        block.key = block.low;
+    }
+
+    // An inverted block listed right before a forward piece of its strand that originally lay below it, with other pieces of the strand in between (so the
+    // two were not joined above), also swapped places with that piece (Samy, 2026-11-18, chr 3 h2: 25/42.807934/45.307362, 25/45.315054/45.313697,
+    // 25/45.307362/45.309799, 25/45.311102/45.311326, 25/45.315054/47.785586): the inversion took the forward piece's place and keeps it, the forward piece
+    // is the moved one. The inversion is ordered by the place it took, so the pieces after it stay in place.
+    for (std::size_t b = 0; b + 1 < blocks.size(); ++b)
+    {
+        Block& block = blocks[b];
+        const Block& next = blocks[b + 1];
+        const SDRfragment& nextFragment = fragments[next.first];
+
+        if (block.swapped || !reversed(fragments[block.first]) || !reversed(fragments[block.last]) || next.first != next.last || reversed(nextFragment)
+            || nextFragment.oldStrandID != fragments[block.first].oldStrandID || highOf(nextFragment) > block.low + svToleranceMbp)
+        {
+            continue;
+        }
+
+        // Not when the inversion's own place is a clean cut: two pieces listed next to each other that flanked it originally (it was moved out from
+        // between them, e.g. chr 13 h2 of the same cell: 35/77.673075/77.670922 sat between 35/74.760672/77.670922 and 35/77.673075/94.114716).
+        bool leftCleanCut = false;
+        for (std::size_t k = 0; k + 1 < fragments.size() && !leftCleanCut; ++k)
+        {
+            leftCleanCut = fragments[k].oldStrandID == nextFragment.oldStrandID && fragments[k + 1].oldStrandID == nextFragment.oldStrandID
+                           && !reversed(fragments[k]) && !reversed(fragments[k + 1])
+                           && approxEqual(highOf(fragments[k]), block.low, svToleranceMbp) && approxEqual(lowOf(fragments[k + 1]), block.high, svToleranceMbp);
+        }
+
+        // And only when the strand reads on upward from the forward piece, up to the inversion's own upper end (deleted stretches may lie in between): the
+        // inversion and that run simply traded places (chr 3 h2: 45.307362-45.309799, 45.311102-45.311326, then 45.315054 where the inversion ends).
+        bool readsOnToInversion = false;
+        for (std::size_t k = next.first; k + 1 < fragments.size(); ++k)
+        {
+            const SDRfragment& current = fragments[k];
+            const SDRfragment& following = fragments[k + 1];
+
+            if (following.oldStrandID != current.oldStrandID || reversed(following) || lowOf(following) < highOf(current) - svToleranceMbp)
+            {
+                break;
+            }
+
+            if (approxEqual(lowOf(following), block.high, svToleranceMbp))
+            {
+                readsOnToInversion = true;
+                break;
+            }
+
+            if (highOf(following) > block.low + svToleranceMbp)
+            {
+                break;
+            }
+        }
+
+        if (leftCleanCut || !readsOnToInversion)
+        {
+            continue;
+        }
+
+        block.swapped = true;
+        block.key = next.low;
+    }
+
     const std::size_t n = blocks.size();
     const double oneBaseMbp = 0.000001;
     const auto weight = [&](const Block& block) { return block.high - block.low + oneBaseMbp + (block.swapped ? 1000.0 : 0.0); };
@@ -2329,7 +2497,7 @@ static std::vector<bool> movedFragmentFlags(const std::vector<SDRfragment>& frag
 
         for (std::size_t c = 0; c < a; ++c)
         {
-            if (fragments[blocks[c].first].oldStrandID == fragments[blocks[a].first].oldStrandID && blocks[c].low < blocks[a].low && best[c] + weight(blocks[a]) > best[a])
+            if (fragments[blocks[c].first].oldStrandID == fragments[blocks[a].first].oldStrandID && blocks[c].key < blocks[a].key && best[c] + weight(blocks[a]) > best[a])
             {
                 best[a] = best[c] + weight(blocks[a]);
                 previousInRun[a] = static_cast<int>(c);
@@ -2594,6 +2762,10 @@ std::vector<PaintedSegment> Karyogram::buildMixedStrandSegmentsWithGaps(
         std::vector<std::pair<double, double>> covered;
         for (const SDRfragment& fragment : record.fragments)
         {
+            if (fragment.oldStrandID != homeOldStrandID)				// A mixed record's foreign pieces (exchanged material) are not part of the home chromosome
+            {
+                continue;
+            }
             covered.emplace_back(std::min(fragment.oldStartPosition, fragment.oldEndPosition), std::max(fragment.oldStartPosition, fragment.oldEndPosition));
         }
         std::sort(covered.begin(), covered.end());
@@ -2613,7 +2785,11 @@ std::vector<PaintedSegment> Karyogram::buildMixedStrandSegmentsWithGaps(
             deleted.emplace_back(reached, originalSizeMbp);
         }
 
-        const std::vector<bool> moved = movedFragmentFlags(record.fragments);
+        std::vector<bool> moved = movedFragmentFlags(record.fragments);
+        for (std::size_t i = 0; i < record.fragments.size(); ++i)
+        {
+            moved[i] = moved[i] && record.fragments[i].oldStrandID == homeOldStrandID;
+        }
         std::vector<std::vector<std::pair<double, double>>> gapsBefore(record.fragments.size());
         std::vector<std::vector<std::pair<double, double>>> gapsAfter(record.fragments.size());
         std::vector<std::pair<double, double>> leadingGaps;
@@ -2621,14 +2797,21 @@ std::vector<PaintedSegment> Karyogram::buildMixedStrandSegmentsWithGaps(
 
         for (const auto& gap : deleted)
         {
+            // An end of the chromosome exchanged for another chromosome's material (a foreign piece at that end of the record) was not deleted: no gap.
             if (approxEqual(gap.first, 0.0, tolerance))
             {
-                leadingGaps.push_back(gap);
+                if (record.fragments.front().oldStrandID == homeOldStrandID)
+                {
+                    leadingGaps.push_back(gap);
+                }
                 continue;
             }
             if (approxEqual(gap.second, originalSizeMbp, tolerance))
             {
-                trailingGaps.push_back(gap);
+                if (record.fragments.back().oldStrandID == homeOldStrandID)
+                {
+                    trailingGaps.push_back(gap);
+                }
                 continue;
             }
 
