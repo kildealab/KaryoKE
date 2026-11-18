@@ -520,6 +520,9 @@ if (karyoke::writeKaryogramViewer(images, "exampleSDR.txt", "exampleSDR_karyogra
 | `bool openInBrowser(htmlPath)` | Opens the file in the default browser (`xdg-open` on Linux, `open` on macOS, `start` on Windows, the Windows browser from WSL). Returns `false` if it could not. |
 | `bool writeZipArchive(entries, zipPath)` | Writes `entries` (`std::vector<std::pair<std::string, std::vector<unsigned char>>>`, each a file name and its contents) into one uncompressed zip file at `zipPath`. This is how the CLI writes `--save-zip`. Returns `false` on failure. |
 
+## LICENSE & TRADEMARKS
+- Source Code: Licensed under the GNU General Public License v3.0.
+- Logo & Program Name: Copyright (c) 2026 Samy Boutros. All rights reserved. The names Karyograms for Karyotype Errors (KaryoKE) and the associated logo image file in images/logo are excluded from the GPLv3 license and may not be reused, modified, or redistributed without explicit written permission. 
 
 ## APPENDIX
 
