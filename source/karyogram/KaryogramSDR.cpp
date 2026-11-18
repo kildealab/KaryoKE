@@ -162,7 +162,7 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
     std::map<int, std::vector<const SDRdataRecord*>> recordsByOriginalStrand;
     // Use to merge aberrant fragments onto a single chromosome in karyogram
     std::vector<SDRdataRecord> mergedRecordStorage;
-    mergedRecordStorage.reserve(subHeader.dataRecords.size()); 				// Safe upper bound.
+    mergedRecordStorage.reserve(2 * subHeader.dataRecords.size()); 			// Safe upper bound (clustered bars plus the acentric slots after X and Y).
 
     // Store maps of chromosome IDs for dicentric and acentric chromosomes to be drawn in their corresponding remaining home slots.
     std::map<int, int> dicentricAcentricOverrides = findDicentricAcentricHomeOverrides(subHeader, static_cast<int>(sizes[0]), masterHeader);
@@ -214,7 +214,70 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
 
     // Chromoplexy-specific shape: an original strand fully consumed by fusing onto two OTHER strands' centromeres (one piece each) gets hidden 
     // from its own slot entirely, and its two partners' own leftover acentric pieces are drawn together in one new slot after X and Y.
-    const std::vector<SDRchromoplexyAcentricPlacement> chromoplexyPlacements = findChromoplexyAcentricRecombinations(subHeader, static_cast<int>(sizes[0]), masterHeader);
+    std::vector<SDRchromoplexyAcentricPlacement> chromoplexyPlacements = findChromoplexyAcentricRecombinations(subHeader, static_cast<int>(sizes[0]), masterHeader);
+
+    // Any other linear record without a centromere that joins pieces of two or more chromosomes (an acentric fragment left by a multi-chromosome
+    // rearrangement) is drawn in the slot of one of those chromosomes that would otherwise be empty, its first one in the record (Samy, 2026-11-18,
+    // cell 0 record 53: pieces of chr 11 h2 and chr 4 h2, drawn in the empty chr 4 h2 slot). When every one of its chromosomes already has something
+    // to draw, it gets its own slot after X and Y, like the chromoplexy leftovers. Acentric partners of a dicentric keep their slot.
+    {
+        std::set<int> placed;
+        for (const SDRchromoplexyAcentricPlacement& placement : chromoplexyPlacements)
+        {
+            placed.insert(placement.leftoverNewStrandIDs.begin(), placement.leftoverNewStrandIDs.end());
+        }
+
+        std::vector<const SDRdataRecord*> candidates;
+        std::map<int, int> recordsPerHome;						// Slot strand -> records drawn there (candidates left out)
+
+        for (const SDRdataRecord& record : subHeader.dataRecords)
+        {
+            std::set<int> strands;
+            bool centric = false;
+            for (const SDRfragment& fragment : record.fragments)
+            {
+                strands.insert(fragment.oldStrandID);
+                centric = centric || fragment.hasCentromere;
+            }
+
+            if (placed.count(record.newStrandID) || record.fragments.empty())
+            {
+                continue;
+            }
+
+            if (record.linear && !centric && strands.size() >= 2 && !dicentricAcentricOverrides.count(record.newStrandID))
+            {
+                candidates.push_back(&record);
+                continue;
+            }
+
+            const auto overrideIt = dicentricAcentricOverrides.find(record.newStrandID);
+            recordsPerHome[(overrideIt != dicentricAcentricOverrides.end()) ? overrideIt->second : determineHomeStrandID(record)]++;
+        }
+
+        for (const SDRdataRecord* record : candidates)
+        {
+            int emptySlot = -1;
+            for (const SDRfragment& fragment : record->fragments)
+            {
+                if (recordsPerHome[fragment.oldStrandID] == 0)
+                {
+                    emptySlot = fragment.oldStrandID;
+                    break;
+                }
+            }
+
+            if (emptySlot != -1)
+            {
+                dicentricAcentricOverrides[record->newStrandID] = emptySlot;
+                recordsPerHome[emptySlot]++;
+            }
+            else
+            {
+                chromoplexyPlacements.push_back({-1, {record->newStrandID}});
+            }
+        }
+    }
 
     std::set<int> chromoplexyConsumedStrands;
     std::set<int> chromoplexyRecombinedNewStrandIDs; 					// newStrandIDs now drawn ONLY in the dedicated chromoplexy slot, not in their own chromosome's slot.
@@ -463,6 +526,20 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
         if (it != recordsByOriginalStrand.end())
         {
             return clusterRecordsForDrawing(filterBaselineIfMutated(it->second, chromosomeCount), oldStrandID, mergedRecordStorage, masterHeader);
+        }
+
+        // No record of its own, but its centromere sits in another chromosome's record: the whole chromosome was used up by rearrangements (Samy,
+        // 2026-11-18, cell 0 chr 4 h2, spread over records 66, 75, 53 and 69), so its slot stays empty instead of showing an intact chromosome. Bases
+        // merely copied into an indel insertion do not count (the cell without its indels is checked).
+        for (const SDRdataRecord& record : subHeader.dataRecords)
+        {
+            for (const SDRfragment& fragment : record.fragments)
+            {
+                if (fragment.oldStrandID == oldStrandID && fragment.hasCentromere)	// Its centromere went elsewhere: not still intact
+                {
+                    return {};
+                }
+            }
         }
 
         return synthesizeIntactRecordIfMissing(oldStrandID, subHeader.cellID, masterHeader, intactRecordStorage);
