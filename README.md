@@ -1,4 +1,4 @@
-# KaryoKE v1.2 - <ins>Karyo</ins>grams for <ins>K</ins>aryotype <ins>E</ins>rrors
+# KaryoKE v1.3 - <ins>Karyo</ins>grams for <ins>K</ins>aryotype <ins>E</ins>rrors
 <p align = "center">
 <img src="images/logo/KaryoKE_logo.svg" alt="KaryoKE logo" width="500">
 </p>
@@ -8,7 +8,7 @@ Writing a C++ toolkit capable of parsing the Standard for DNA Damage (SDD) file 
 the Standard for DNA Repair (SDR) header and data fields, and drawing the cairo-based karyogram visualizations
 of the associated damages and mutations. 
 
-**KaryoKE v1.2 is compatible with SDD version 1.0 and SDR version 2.2.**
+**KaryoKE v1.3 is compatible with SDD version 1.0 and SDR version 2.2.**
 
 This package is now capable of summarizing the SDD header fields and data fields into a single summary file. It can also optionally plot a 
 karyogram of the double-strand break and single-strand break locations onto the chromosomes the user passes in the SDD file header. 
@@ -129,7 +129,7 @@ file starts with the KaryoKE version that produced it. If `-kh` or `-ko` is pass
   final status line. For example:
 
 ```
-KaryoKE v1.1
+KaryoKE v1.3
 SDR file processing: exampleSDR.txt...
 Processing cell X/'TOTAL' (Cell ID Y)...
 Summary written to: "exampleSDR_summary.txt"

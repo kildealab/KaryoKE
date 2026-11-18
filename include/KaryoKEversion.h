@@ -3,7 +3,7 @@
 
 // KaryoKE version, shown by "karyoke -v" / "--version", at the start of every run, in the summary files and in the web viewer.
 // Change it here only; everything else reads it from this header.
-#define KARYOKE_VERSION "1.2"
+#define KARYOKE_VERSION "1.3"
 
 namespace karyoke
 {
