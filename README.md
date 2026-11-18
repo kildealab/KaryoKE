@@ -4,8 +4,8 @@
 </p>
 
 
-Writing a C++ toolkit capable of parsing the Standard for DNA Damage (SDD) file header and data fields,
-the Standard for DNA Repair (SDR) header and data fields, and drawing the cairo-based karyogram visualizations
+Writing a C++ toolkit capable of parsing the Standard for DNA Damage<sup><a id="cite-1" href="#ref-1">[1]</a></sup> (SDD) file header and data fields,
+the Standard for DNA Repair<sup><a id="cite-2" href="#ref-2">[2]</a></sup> (SDR) header and data fields, and drawing the cairo-based karyogram visualizations
 of the associated damages and mutations. 
 
 **KaryoKE v1.3 is compatible with SDD version 1.0 and SDR version 2.2.**
@@ -147,7 +147,7 @@ All 'TOTAL' cells processed successfully.
 
 6. If you decide to plot the Karyogram of the SDD/SDR file illustrating the locations of the single- and double-strand breaks on each of the chromosomes, 
 or the mutations on each chromosome, respectively you can specify either `-kh` (human) for human genome centromere positions or `-ko` (other) for generic centromere
-locations. Note: If using SDR files from MEDRAS-MC output, please specify `-ko` for now, as MEDRAS-MC assumes centromere locations at 50% of the chromosome length.
+locations. Note: If using SDR files from MEDRAS-MC<sup><a id="cite-3" href="#ref-3">[3]</a></sup> output, please specify `-ko` for now, as MEDRAS-MC assumes centromere locations at 50% of the chromosome length.
 
 7. IMPORTANT: The karyogram can now handle the user passing 'Chromosome sizes' in the SDD and SDR header in the following three ways 
 (example for human chromosomes) :
@@ -224,7 +224,7 @@ within a given damage site (i.e. a given SDD data row) (usually between 0-5 SSBs
 
 #### Size threshold between indels and structural variations
 
-Following Youk et al. 2024, **indels are smaller than 100 bp and structural variations (SVs) are 100 bp or larger**:
+Following Youk et al. 2024<sup><a id="cite-4" href="#ref-4">[4]</a></sup>, **indels are smaller than 100 bp and structural variations (SVs) are 100 bp or larger**:
 
 | Size of the change | Classified as |
 |---|---|
@@ -520,9 +520,21 @@ if (karyoke::writeKaryogramViewer(images, "exampleSDR.txt", "exampleSDR_karyogra
 | `bool openInBrowser(htmlPath)` | Opens the file in the default browser (`xdg-open` on Linux, `open` on macOS, `start` on Windows, the Windows browser from WSL). Returns `false` if it could not. |
 | `bool writeZipArchive(entries, zipPath)` | Writes `entries` (`std::vector<std::pair<std::string, std::vector<unsigned char>>>`, each a file name and its contents) into one uncompressed zip file at `zipPath`. This is how the CLI writes `--save-zip`. Returns `false` on failure. |
 
+## Citations
+
+[1] <span id="ref-1"></span>Schuemann, J., McNamara, A. L., Warmenhoven, J. W., Henthorn, N. T., Kirkby, K. J., Merchant, M. J., Ingram, S., Paganetti, H., Held, K. D., Ramos-Mendez, J., Faddegon, B., Perl, J., Goodhead, D. T., Plante, I., Rabus, H., Nettelbeck, H., Friedland, W., Kundrát, P., Ottolenghi, A., Baiocco, G., … McMahon, S. J. (2019). A New Standard DNA Damage (SDD) Data Format. Radiation research, 191(1), 76–92. https://doi.org/10.1667/RR15209.1
+
+[2] <span id="ref-2"></span>https://github.com/Zhenlun/generate-standard-DNA-repair-with-medras-mc
+
+[3] <span id="ref-3"></span>https://github.com/sjmcmahon/Medras-MC.git
+
+[4] <span id="ref-4"></span>Youk, J., Kwon, H. W., Lim, J., Kim, E., Kim, T., Kim, R., Park, S., Yi, K., Nam, C. H., Jeon, S., An, Y., Choi, J., Na, H., Lee, E. S., Cho, Y., Min, D. W., Kim, H., Kang, Y. R., Choi, S. H., Bae, M. J., … Ju, Y. S. (2024). Quantitative and qualitative mutational impact of ionizing radiation on normal cells. Cell genomics, 4(2), 100499. https://doi.org/10.1016/j.xgen.2024.100499
+
+
 ## LICENSE & TRADEMARKS
 - Source Code: Licensed under the GNU General Public License v3.0.
 - Logo & Program Name: Copyright (c) 2026 Samy Boutros. All rights reserved. The names Karyograms for Karyotype Errors (KaryoKE) and the associated logo image file in images/logo are excluded from the GPLv3 license and may not be reused, modified, or redistributed without explicit written permission. 
+
 
 ## APPENDIX
 
