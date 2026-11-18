@@ -104,10 +104,10 @@ inline bool approxEqual(double a, double b, double tolerance)
 }
 
 
-// Structural variations are >= 100 bp; anything smaller is an indel (Youk et al. 2024, chosen by Samy 2026-11-05). Two positions up to 100 bases
+// Structural variations are >= 100 bp; anything smaller is an indel (Youk et al. 2024). Two positions up to 100 bases
 // apart (at most 99 bases missing between them, e.g. 50.000000 -> 50.000100) are therefore treated as touching by every structural-variation detector
 // and the drawing; 50.000000 -> 50.000101 (100 bases missing) is a structural-variation gap. A balanced inversion or translocation may likewise lose
-// up to 99 bases at its breakpoints and still count as balanced (Samy, 2026-11-05; it was 10 bp).
+// up to 99 bases at its breakpoints and still count as balanced.
 constexpr double svToleranceMbp = 0.000100;
 
 
@@ -141,18 +141,16 @@ inline bool isIndelSizedFragment(const SDRfragment& fragment)
 //    e.g. 1/0/50.000000/0, 1/50.000005/263.2/1 is 4 bases deleted (50.000001-50.000004); 1/0/50.000000/0, 1/50.000100/263.2/1 is 99 (the largest indel),
 //    are joined back into one piece, so the record reads as if the indel never happened (often a plain whole copy of the chromosome).
 // Gaps of 100 bp or more, pieces of 100 bp or more, and pieces at either end of a linear record are left alone. Baseline records (newStrandID <=
-// numOriginalStrands) are not changed. Circular records (ecDNA, rings) are cleaned too, including the site where the circle closes (Samy, 2026-11-09). A site with both a deletion and an insertion is ONE indel.
+// numOriginalStrands) are not changed. Circular records (ecDNA, rings) are cleaned too, including the site where the circle closes. A site with both a deletion and an insertion is ONE indel.
 //  - Excised partner: as for long deletions, the deleted bases may be listed as their own record, or not at all. A single-piece record of the same strand
 //    covering the deleted bases (each end within one base of the gap's, so 1/50.000001/50.000004/0 and 1/50.000000/50.000005/0 both match the gap above) is
 //    part of the indel and is taken out too, so it is neither scored nor drawn; each such record is used for one indel only. Without this the leftover piece
 //    was a change no other type explained, so it counted as a complex genomic rearrangement. The partner may be linear or circular and listed in either
-//    orientation (Samy, 2026-11-03): an ecDNA of < 100 bp cut from an indel gap is scored as the indel deletion, not as ecDNA, and is not drawn, and so is a
+//    orientation: an ecDNA of < 100 bp cut from an indel gap is scored as the indel deletion, not as ecDNA, and is not drawn, and so is a
 //    reversed linear piece (unlike a long deletion, whose reversed excised piece counts as foreign material).
-// Returns a copy of the cell with every rearranged linear record read in the orientation of its HOME strand (Samy, 2026-11-17). A chromosome can be listed
-// from either end, e.g. 2/258.1/200.067958, 2/200.06783/200.067958, 2/200.06783/145.190177, ..., 2/8.960652/0 reads chromosome 2 from its top end, so its
-// three small inversions look like forward pieces in a reversed chromosome. Such a record is flipped (pieces listed in reverse order, each piece's start
-// and end swapped) so the home strand reads from 0 Mbp up to its end: 2/0/8.960652, ..., 2/200.067958/200.06783, 2/200.067958/258.1, and only the truly
-// inverted pieces are reversed. The home strand is the strand of the piece listing the centromere (the first such piece for a dicentric, the first piece
+// Returns a copy of the cell with every rearranged linear record read in the orientation of its HOME strand. A chromosome can be listed
+// from either end; listed from its top end, its inverted pieces look like forward pieces in a reversed chromosome. Such a record is flipped (pieces listed
+// in reverse order, each piece's start and end swapped) so the home strand reads from 0 Mbp up to its end, and only the truly inverted pieces are reversed. The home strand is the strand of the piece listing the centromere (the first such piece for a dicentric, the first piece
 // when there is no centromere); the record reads from the top end when the home strand's
 // first piece lies above its last piece. Pieces of other strands are flipped with it, so their orientation is relative to the home strand. Records with a
 // single piece of the home strand (e.g. translocation derivatives), circular records and baseline records are left as they are.
@@ -167,7 +165,7 @@ inline SDRsubHeader orientRecordsToHomeStrand(const SDRsubHeader& subHeader, int
             continue;
         }
 
-        // Home strand (Samy, 2026-11-17): the strand of the piece listing the centromere; for a dicentric, the first piece listing one. A record with no
+        // Home strand: the strand of the piece listing the centromere; for a dicentric, the first piece listing one. A record with no
         // centromere falls back to the strand of its first piece, as for the karyogram slot (see the home strand convention above).
         int homeStrandID = record.fragments.front().oldStrandID;
 
@@ -218,7 +216,7 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& rawSubHeader, int numOrigin
     std::map<std::pair<int, std::size_t>, std::size_t> insertionOnlySites;		// {newStrandID, index of the piece after the site in the cleaned record} -> its insertion-only indel
     std::map<int, std::vector<std::pair<double, double>>> smallInversions;		// Per strand, the stretches flipped in place by a small inversion (not indels)
 
-    // INDELS AT STRUCTURAL-VARIATION BREAKPOINTS ARE CONSUMED (Samy, 2026-11-17): an indel is scored only when it is not part of a larger structural variation.
+    // INDELS AT STRUCTURAL-VARIATION BREAKPOINTS ARE CONSUMED: an indel is scored only when it is not part of a larger structural variation.
     // Bases lost (1-99) or inserted where the reading does not simply carry on along the same strand (an inversion's ends, a translocation junction, the ends of
     // a deletion or of an excised ecDNA, around a moved piece, either side of a small inversion) belong to that structural variation and are not counted. They
     // are still cleaned away (and their excised pieces taken out), so the detectors see a clean break. Exception: deleted bases that formed their own small
@@ -228,7 +226,7 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& rawSubHeader, int numOrigin
         return std::any_of(subHeader.dataRecords.begin(), subHeader.dataRecords.end(), [&](const SDRdataRecord& r) { return r.newStrandID == newStrandID && !r.linear; });
     };
 
-    // MOVED small pieces (Samy, 2026-11-17): the 100 bp threshold applies only to copy-number-altering mutations, so balanced rearrangements of small pieces
+    // MOVED small pieces: the 100 bp threshold applies only to copy-number-altering mutations, so balanced rearrangements of small pieces
     // are not indels:
     //  - a small reciprocal exchange between two chromosomes (each receives a < 100 bp piece cut out of the other) is a balanced translocation of any size;
     //  - a small piece cut out of a chromosome and put back elsewhere in the same chromosome is an intra-chromosomal move (complex genomic rearrangement).
@@ -375,9 +373,8 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& rawSubHeader, int numOrigin
             }
         }
 
-        // The deleted bases may also be listed as several single-piece records that together cover the gap end to end (Samy, 2026-11-17, e.g. the
-        // 89-base gap 23/236.881209-236.881299 cut into the circles 23/236.881209/236.881219 and 23/236.881219/236.881299): all of them are part of the
-        // indel. The first is returned, the others are marked as taken here.
+        // The deleted bases may also be listed as several single-piece records that together cover the gap end to end (e.g. a gap cut into two
+        // small circles): all of them are part of the indel. The first is returned, the others are marked as taken here.
         std::vector<std::pair<std::pair<double, double>, int>> pieces;			// {low, high}, newStrandID
 
         for (const SDRdataRecord& candidate : subHeader.dataRecords)
@@ -462,8 +459,7 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& rawSubHeader, int numOrigin
             }
 
             // A small piece flipped in place between two pieces of its own strand (they end and start where it starts and ends, within one base) is a small
-            // inversion, not an indel: it stays in the record and is scored as a balanced inversion (Samy, 2026-11-17, e.g. 1/0/141.673393,
-            // 1/141.673402/141.673393, 1/141.673402/171.472755).
+            // inversion, not an indel: it stays in the record and is scored as a balanced inversion.
             if (runEnd == i + 1 && runEnd < original.size())
             {
                 const SDRfragment& before = kept.back();
@@ -475,7 +471,7 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& rawSubHeader, int numOrigin
                 const double gapLow = std::min(before.oldEndPosition, after.oldStartPosition);
                 const double gapHigh = std::max(before.oldEndPosition, after.oldStartPosition);
 
-                // Up to 99 bases may be lost at either breakpoint (Samy, 2026-11-17).
+                // Up to 99 bases may be lost at either breakpoint.
                 const double pieceLow = std::min(piece.oldStartPosition, piece.oldEndPosition);
                 const double pieceHigh = std::max(piece.oldStartPosition, piece.oldEndPosition);
                 const long long lostBelow = basesBetween(gapLow, pieceLow) - 1;
@@ -525,7 +521,7 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& rawSubHeader, int numOrigin
                                   && distance >= 0 && gapBases <= indelMaxBases && (gapBases > 0 || insertion) && movedOut == 0;
             const bool lostAroundMovedPiece = movedOut > 0 && deletedBases > 0 && deletedBases <= indelMaxBases && leftReversed == rightReversed;
 
-            // Bases lost at a breakpoint the reading does not carry on through (Samy, 2026-11-09): the orientation changes, as at either end of an inversion,
+            // Bases lost at a breakpoint the reading does not carry on through: the orientation changes, as at either end of an inversion,
             // or a reversed piece is followed by the reversed piece above it (two touching inversions). The two ends that were joined in the original strand are
             //   forward -> reversed: the left piece's end and the right piece's end (its low end), e.g. 2/0/130, 2/180/130.000050 (49 bases lost)
             //   reversed -> forward: the left piece's start (its high end) and the right piece's start, e.g. 2/180/130, 2/180.000060/258.1 (59 bases lost)
@@ -645,7 +641,7 @@ inline SDRsubHeader removeIndels(const SDRsubHeader& rawSubHeader, int numOrigin
         record.fragments = kept;
     }
 
-    // Bases lost at a breakpoint BETWEEN records (Samy, 2026-11-09), e.g. the two derivatives of a balanced translocation 5/0/120/1, 6/160.000050/181.8/0 and
+    // Bases lost at a breakpoint BETWEEN records, e.g. the two derivatives of a balanced translocation 5/0/120/1, 6/160.000050/181.8/0 and
     // 6/0/160/1, 5/120.000001/192.2/0 (49 bases of chromosome 6 lost), or an excised piece that lost a few bases at its ends. Every piece of 100 bp or more of
     // each strand, over all rearranged records, is sorted by position; 1-99 bases missing between two neighbouring pieces is an indel deletion, counted under the
     // record holding the lower piece. Neighbours listed next to each other in one record were already judged above and are skipped.
@@ -1655,7 +1651,7 @@ inline std::vector<std::pair<double, double>> circularPiecesTilingGap(const SDRs
 // Looks through every rearranged record (except ignoreNewStrandIDs) for a fragment of oldStrandID matching [gapStart, gapEnd] within tolerance.
 // Priority: Circular > Foreign > LinearExcised > None. excisedStrandID is set only for LinearExcised (else -1).
 // acceptReversedExcised: a single-fragment linear record filling the gap counts as the excised piece in either orientation (long deletions, deletion-inversions
-// and deletion-translocations, Samy 2026-11-03: the cut-out piece is loose, so an inverted listing such as 5/60/40/0 is still just the deleted segment, as long as
+// and deletion-translocations: the cut-out piece is loose, so an inverted listing such as 5/60/40/0 is still just the deleted segment, as long as
 // it is not inserted into another chromosome). Otherwise only a forward one does and a reversed one is Foreign.
 inline SDRgapPartner classifyGapPartner(const SDRsubHeader& subHeader, int numOriginalStrands, int oldStrandID, double gapStart, double gapEnd, double tolerance, const std::set<int>& ignoreNewStrandIDs, int& excisedStrandID,
                                         bool acceptReversedExcised = false)
@@ -2651,8 +2647,8 @@ inline std::vector<SDRecDNAevent> detectECDNA(const SDRsubHeader& subHeader, int
         {
 
 	    // Reject if this record has fragments from OTHER old strands too, unless it is a linear record holding two or more pieces of this strand around the
-	    // gap: the chromosome may also have exchanged an end with another chromosome (Samy, 2026-11-17, e.g. 3/0/102.547006, 3/104.154719/212.098566/1,
-	    // 4/1.792006/0 with the circle 3/102.547006/104.154719 is an ecDNA formation plus a balanced translocation).
+	    // gap: the chromosome may also have exchanged an end with another chromosome (an ecDNA formation plus a
+	    // balanced translocation).
 	    if (fragments.size() != newStrandIDtotalFragments[newStrandID] && !(recordByNewStrand[newStrandID]->linear && fragments.size() >= 2))
             {
                 continue;
@@ -2954,7 +2950,7 @@ inline std::vector<SDRecDNAevent> detectECDNA(const SDRsubHeader& subHeader, int
         ecDNAevents.erase(std::remove_if(ecDNAevents.begin(), ecDNAevents.end(), [&](const SDRecDNAevent& e)
         {
             // One deleted segment that gave two or more circular records (each circle may hold several pieces) is a complex genomic rearrangement, not
-            // ecDNA (Samy, 2026-11-17): it is left unexplained here, so the CGR check counts it. It is still drawn (applyHierarchy = false keeps it).
+            // ecDNA: it is left unexplained here, so the CGR check counts it. It is still drawn (applyHierarchy = false keeps it).
             if (e.severalCircles)
             {
                 return true;
@@ -3865,7 +3861,7 @@ inline bool piecesInOriginalOrder(const std::vector<SDRfragment>& pieces, bool a
             while (j < fragments.size() && isReversedFragment(fragments[j]))
             {
                 // A reversed piece lying above the previous one (e.g. 7/80/50 then 7/120/80, two touching inversions) breaks the order: two touching
-                // inversions take 3 double-strand breaks and are one complex genomic rearrangement, not two inversions (Samy, 2026-11-17).
+                // inversions take 3 double-strand breaks and are one complex genomic rearrangement, not two inversions.
                 if (fragments[j].oldStartPosition > fragments[j - 1].oldEndPosition + tolerance)	// Inside the block, each piece lies below the previous one
                 {
                     return false;
@@ -3920,7 +3916,7 @@ inline bool isNonSequentialRearrangement(const SDRdataRecord& record, std::size_
 
 // True when a linear record of ONE chromosome has two touching inversions: two consecutive reversed pieces, the second lying just above the first (fewer than
 // 100 bases apart), e.g. 7/0/50, 7/80/50, 7/120/80, 7/120/168.8. They take 3 double-strand breaks, so they are one complex genomic rearrangement, not two
-// balanced inversions (Samy, 2026-11-17), however few pieces the record has.
+// balanced inversions, however few pieces the record has.
 inline bool hasTouchingInversions(const SDRdataRecord& record)
 {
     if (!record.linear)
@@ -3959,11 +3955,11 @@ inline bool hasTouchingInversions(const SDRdataRecord& record)
 }
 
 
-// Independent rearrangements within one chromosome (Samy, 2026-11-17): two rearrangements separated by an intact forward piece sitting in its original
+// Independent rearrangements within one chromosome: two rearrangements separated by an intact forward piece sitting in its original
 // place (every piece listed before it lies below it, every piece after it lies above it) do not share breakpoints and are unrelated, so each is scored on
 // its own (chromothripsis and chromoplexy excepted). Such pieces split a single-chromosome record into stretches; returns the span (low, high in Mbp) of
-// every stretch whose pieces are out of their original order (see piecesInOriginalOrder()), e.g. 1/0/141.67, 1/141.68/141.67, 1/141.68/171.47,
-// 1/171.48/171.49, 1/171.48/171.47, 1/171.49/263.2 gives only 171.47-171.49 (the two swapped pieces); the small inversion before it is scored on its own.
+// every stretch whose pieces are out of their original order (see piecesInOriginalOrder()); an inversion standing apart from such a stretch is scored on
+// its own.
 inline std::vector<std::pair<double, double>> outOfOrderRegions(const SDRdataRecord& record)
 {
     const double tolerance = svToleranceMbp;
@@ -4079,7 +4075,7 @@ inline bool hasShatteredExchangedMaterial(const SDRdataRecord& record)
 // True if a record has material missing INSIDE a rearranged segment: two consecutive pieces of one strand whose reading carries on across a gap
 // of 100+ bases (not touching), either both inverted (reading downwards, see recordHasGapInsideInvertedSegment()) or both forward and translocated
 // (the strand has no centromere in this record while another strand's centromere is in it), e.g. 5/0/120/1, 6/160/175.1, 6/175.2/181.8. A deletion
-// or an ecDNA cut from inside an inversion or a translocated segment is scored as a complex genomic rearrangement (Samy, 2026-11-09).
+// or an ecDNA cut from inside an inversion or a translocated segment is scored as a complex genomic rearrangement.
 inline bool hasGapInsideRearrangedSegment(const SDRdataRecord& record)
 {
     if (!record.linear)
@@ -4307,8 +4303,7 @@ inline std::vector<SDRchromothripsisEvent> detectShatteredClusters(const SDRsubH
                 }
             }
 
-            // Material deleted or cut out as ecDNA right at the edge of an out-of-order stretch belongs to it (Samy, 2026-11-17, e.g. 14/0/89.684746,
-            // 14/89.68662/89.685795, 14/89.684746/89.685795, 14/102.453144/113 with the circle 14/89.68662/102.453144 is one complex genomic rearrangement,
+            // Material deleted or cut out as ecDNA right at the edge of an out-of-order stretch belongs to it (one complex genomic rearrangement,
             // not a CGR plus ecDNA): the stretch is widened over every gap in the strand's linear pieces that touches it, so the deletion or ecDNA there is
             // silenced like anything else inside it.
             if (!regions.empty())

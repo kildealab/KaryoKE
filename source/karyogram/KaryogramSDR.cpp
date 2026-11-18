@@ -217,8 +217,7 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
     std::vector<SDRchromoplexyAcentricPlacement> chromoplexyPlacements = findChromoplexyAcentricRecombinations(subHeader, static_cast<int>(sizes[0]), masterHeader);
 
     // Any other linear record without a centromere that joins pieces of two or more chromosomes (an acentric fragment left by a multi-chromosome
-    // rearrangement) is drawn in the slot of one of those chromosomes that would otherwise be empty, its first one in the record (Samy, 2026-11-18,
-    // cell 0 record 53: pieces of chr 11 h2 and chr 4 h2, drawn in the empty chr 4 h2 slot). When every one of its chromosomes already has something
+    // rearrangement) is drawn in the slot of one of those chromosomes that would otherwise be empty, its first one in the record. When every one of its chromosomes already has something
     // to draw, it gets its own slot after X and Y, like the chromoplexy leftovers. Acentric partners of a dicentric keep their slot.
     {
         std::set<int> placed;
@@ -528,8 +527,8 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
             return clusterRecordsForDrawing(filterBaselineIfMutated(it->second, chromosomeCount), oldStrandID, mergedRecordStorage, masterHeader);
         }
 
-        // No record of its own, but its centromere sits in another chromosome's record: the whole chromosome was used up by rearrangements (Samy,
-        // 2026-11-18, cell 0 chr 4 h2, spread over records 66, 75, 53 and 69), so its slot stays empty instead of showing an intact chromosome. Bases
+        // No record of its own, but its centromere sits in another chromosome's record: the whole chromosome was used up by rearrangements (its pieces
+        // all sit in other chromosomes' records), so its slot stays empty instead of showing an intact chromosome. Bases
         // merely copied into an indel insertion do not count (the cell without its indels is checked).
         for (const SDRdataRecord& record : subHeader.dataRecords)
         {
@@ -599,7 +598,7 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
             double rightSlotCenterX = groupCenterX + rightStackWidth / 2.0 + homologGap / 2.0;
 
             // Moved-segment arrows are drawn on the LEFT of a chromosome, so on the second homolog they reach into the gap towards the first homolog and
-            // its circles (Samy, 2026-11-17). The second homolog is drawn once off-screen to measure how far its drawing reaches left of its slot, and the
+            // its circles. The second homolog is drawn once off-screen to measure how far its drawing reaches left of its slot, and the
             // gap is widened by that much, so the arrows keep the usual homologGap from the first homolog's slot, like the first homolog's circles do.
             if (!rightRecords.empty())
             {
@@ -1340,8 +1339,8 @@ void Karyogram::drawPaintedFragment(			// Function to draw the individual fragme
             blocks.push_back({segment.oldStrandID, lowMbp, highMbp, i, i});
         }
 
-        // An inverted block also ends with a reversed piece (Samy, 2026-11-17): forward pieces trailing it were not flipped back inside an inversion but
-        // swapped with it, e.g. 14/89.68662/89.685795, 14/89.684746/89.685795: the forward piece lies below the reversed one, so it moved. They become
+        // An inverted block also ends with a reversed piece: forward pieces trailing it were not flipped back inside an inversion but
+        // swapped with it (the forward piece lies below the reversed one, so it moved). They become
         // blocks of their own.
         for (std::size_t b = 0; b < blocks.size(); ++b)
         {
@@ -1389,10 +1388,44 @@ void Karyogram::drawPaintedFragment(			// Function to draw the individual fragme
         for (PieceBlock& block : blocks)
         {
             block.keyMbp = block.lowMbp;
+
+            // An inverted block whose own original place is a clean cut between two pieces drawn next to each other was cut out from there: it is the
+            // moved one (see movedFragmentFlags()).
+            if (block.swappedWithTrailingPiece)
+            {
+                std::size_t previousPiece = segments.size();
+                for (std::size_t k = 0; k < segments.size(); ++k)
+                {
+                    if (isWhiteColor(segments[k].color))
+                    {
+                        continue;
+                    }
+
+                    if (previousPiece < segments.size() && !(previousPiece >= block.first && previousPiece <= block.last))
+                    {
+                        const PaintedSegment& above = segments[previousPiece];
+                        const PaintedSegment& below = segments[k];
+                        const double aboveLow = std::min(above.oldStartPosition, above.oldEndPosition);
+                        const double aboveHigh = std::max(above.oldStartPosition, above.oldEndPosition);
+                        const double belowLow = std::min(below.oldStartPosition, below.oldEndPosition);
+                        const double belowHigh = std::max(below.oldStartPosition, below.oldEndPosition);
+
+                        if (above.oldStrandID == block.strandID && below.oldStrandID == block.strandID
+                            && ((approxEqual(aboveHigh, block.lowMbp, svToleranceMbp) && approxEqual(belowLow, block.highMbp, svToleranceMbp))
+                                || (approxEqual(aboveLow, block.highMbp, svToleranceMbp) && approxEqual(belowHigh, block.lowMbp, svToleranceMbp))))
+                        {
+                            block.swappedWithTrailingPiece = false;
+                            break;
+                        }
+                    }
+
+                    previousPiece = k;
+                }
+            }
         }
 
         // An inverted block drawn right before a forward piece of its strand that originally lay below it (not joined above because other pieces of the
-        // strand lie in between) also swapped places with it (Samy, 2026-11-18, chr 3 h2, see movedFragmentFlags()): it keeps the place it took, which
+        // strand lie in between) also swapped places with it (see movedFragmentFlags()): it keeps the place it took, which
         // orders it, and the forward piece gets the arrow.
         for (std::size_t b = 0; b + 1 < blocks.size(); ++b)
         {
@@ -1496,8 +1529,7 @@ void Karyogram::drawPaintedFragment(			// Function to draw the individual fragme
             std::vector<int> previousInRun(n, -1);
 
             // An inverted block swapped with the forward piece trailing it keeps its place, and the forward piece is the moved one: the inversion already shows
-            // with its chevron (Samy, 2026-11-17: for 14/89.68662/89.685795, 14/89.684746/89.685795 the arrow marks the forward piece, originally before
-            // the inverted one).
+            // with its chevron, so the arrow marks the forward piece (originally before the inverted one).
             const double invertedBlockBonusMbp = 1000.0;
             const auto blockWeight = [&](const PieceBlock& block)
             {
@@ -2106,7 +2138,7 @@ void Karyogram::drawStackedMutations(
                 // Mixed-strand case (material exchanged between two chromosomes), fragment positions live in different
                 // coordinate systems, so buildDeletionRemainingSegments' sorting assumption doesn't hold. Walks fragments in
                 // file order instead, inserting white gaps only between immediately-adjacent HOME-strand fragments.
-                // Home pieces moved within the chromosome (Samy, 2026-11-18, chr 3 h2 ending in a piece of chr 4): laid out like a single-strand record with
+                // Home pieces moved within the chromosome: laid out like a single-strand record with
                 // moved pieces, so deleted stretches sit where they belong and moved pieces get their arrows.
                 baseSegments = buildMixedStrandSegmentsWithGaps(*baseRecord, homeOldStrandID, humanGenome, masterHeader, baseLengthMbp, homePiecesMoved(*baseRecord, homeOldStrandID));
             }
@@ -2423,7 +2455,7 @@ static bool hasPiecesMovedWithinStrand(const std::vector<SDRfragment>& fragments
 
 
 
-// Which pieces of a single-chromosome record moved (Samy, 2026-11-17), by the same rule drawPaintedFragment() uses for the arrows: pieces are grouped into
+// Which pieces of a single-chromosome record moved, by the same rule drawPaintedFragment() uses for the arrows: pieces are grouped into
 // blocks (an inverted block starts and ends with a reversed piece and reads downward with nothing of the strand in between; forward pieces trailing it were
 // swapped with it), and the heaviest increasing run of blocks by length stays in place (an inverted block swapped with a trailing piece is preferred to stay).
 static std::vector<bool> movedFragmentFlags(const std::vector<SDRfragment>& fragments)
@@ -2500,11 +2532,35 @@ static std::vector<bool> movedFragmentFlags(const std::vector<SDRfragment>& frag
     for (Block& block : blocks)
     {
         block.key = block.low;
+
+        // An inverted block whose own original place is a clean cut between two pieces listed next to each other (one ends where it started, the next
+        // starts where it ended) was cut out from there: it is the moved one, not the forward piece it was swapped with.
+        if (block.swapped)
+        {
+            for (std::size_t k = 0; k + 1 < fragments.size(); ++k)
+            {
+                const SDRfragment& above = fragments[k];
+                const SDRfragment& below = fragments[k + 1];
+                const int strandID = fragments[block.first].oldStrandID;
+
+                if (k >= block.first && k <= block.last)
+                {
+                    continue;
+                }
+
+                if (above.oldStrandID == strandID && below.oldStrandID == strandID
+                    && ((approxEqual(highOf(above), block.low, svToleranceMbp) && approxEqual(lowOf(below), block.high, svToleranceMbp))
+                        || (approxEqual(lowOf(above), block.high, svToleranceMbp) && approxEqual(highOf(below), block.low, svToleranceMbp))))
+                {
+                    block.swapped = false;
+                    break;
+                }
+            }
+        }
     }
 
     // An inverted block listed right before a forward piece of its strand that originally lay below it, with other pieces of the strand in between (so the
-    // two were not joined above), also swapped places with that piece (Samy, 2026-11-18, chr 3 h2: 25/42.807934/45.307362, 25/45.315054/45.313697,
-    // 25/45.307362/45.309799, 25/45.311102/45.311326, 25/45.315054/47.785586): the inversion took the forward piece's place and keeps it, the forward piece
+    // two were not joined above), also swapped places with that piece: the inversion took the forward piece's place and keeps it, the forward piece
     // is the moved one. The inversion is ordered by the place it took, so the pieces after it stay in place.
     for (std::size_t b = 0; b + 1 < blocks.size(); ++b)
     {
@@ -2519,7 +2575,7 @@ static std::vector<bool> movedFragmentFlags(const std::vector<SDRfragment>& frag
         }
 
         // Not when the inversion's own place is a clean cut: two pieces listed next to each other that flanked it originally (it was moved out from
-        // between them, e.g. chr 13 h2 of the same cell: 35/77.673075/77.670922 sat between 35/74.760672/77.670922 and 35/77.673075/94.114716).
+        // between them, so the inversion is the moved piece).
         bool leftCleanCut = false;
         for (std::size_t k = 0; k + 1 < fragments.size() && !leftCleanCut; ++k)
         {
@@ -2529,7 +2585,7 @@ static std::vector<bool> movedFragmentFlags(const std::vector<SDRfragment>& frag
         }
 
         // And only when the strand reads on upward from the forward piece, up to the inversion's own upper end (deleted stretches may lie in between): the
-        // inversion and that run simply traded places (chr 3 h2: 45.307362-45.309799, 45.311102-45.311326, then 45.315054 where the inversion ends).
+        // inversion and that run simply traded places.
         bool readsOnToInversion = false;
         for (std::size_t k = next.first; k + 1 < fragments.size(); ++k)
         {
@@ -2892,11 +2948,10 @@ std::vector<PaintedSegment> Karyogram::buildMixedStrandSegmentsWithGaps(
                 continue;
             }
 
-            // Deleted stretches stay next to a piece that did not move (Samy, 2026-11-17): only a moved piece leaves its place. Among pieces in place, the
+            // Deleted stretches stay next to a piece that did not move: only a moved piece leaves its place. Among pieces in place, the
             // gap goes next to the piece whose upper end borders it (after a forward piece, before a reversed one, e.g. above an inversion), else next to the
             // piece whose lower end borders its upper end (before a forward piece, after a reversed one), but never at the spot a moved piece was cut out
-            // of, which stays plain. E.g. 14/0/89.684746, 14/89.68662/89.685795, 14/89.684746/89.685795, 14/102.453144/113: above the inverted piece is
-            // where the moved piece was cut out, so the white gap follows the moved piece instead. Moved pieces are used only when nothing else fits.
+            // of, which stays plain (there the white gap follows the moved piece instead). Moved pieces are used only when nothing else fits.
             bool placed = false;
 
             const auto lowOf = [](const SDRfragment& fragment) { return std::min(fragment.oldStartPosition, fragment.oldEndPosition); };
