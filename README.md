@@ -248,18 +248,19 @@ event, only the higher-tier event is counted:
 
 | Tier | Mutation types |
 |---|---|
+| 0 Short indels| Insertion indels or deletion indels|
 | 1 Simple mutations| Long deletions, balanced inversions, balanced translocations |
 | 2 Composite Mutations| Deletion-insertions, deletion-inversions, deletion-translocations |
 | 3 Complex Genomic Rearrangements| ecDNA, chromoplexy, chromothripsis, and other mutations not included in any previous class |
 
+- Indel mutations at breakpoints of large structural variations get scored as part of the structural variation.
 - Lower-tier events whose fragments end up in an ecDNA are counted as ecDNA only, and ecDNA on strands that are part of a chromothripsis or
   chromoplexy event is counted only as that chromothripsis or chromoplexy. ecDNA fragments may be in either orientation (forward or reversed).
 - **Chromoplexy** involves 3 or more chromosomes, and every one of them must receive foreign material.
 - **Chromothripsis** is scored for a cluster of one or two strands when either or both together has 10 or more fragments;
   **Complex genomic rearrangements** are scored for any complex mutations not meeting the criteria of ecDNA/chromothripsis/chromoplexy, such as 4 or more
 fragments being rearranged out of order, or material exchanged between two chromosomes that broke and was rearranged on the way (e.g. a
-translocated fragment that broke in two and was inverted before insertion). Any other change to a chromosome that no other mutation type explains (for example an inversion reaching
-a chromosome end, or an inversion next to an ecDNA or ring excision) also counts as one complex genomic rearrangement on that chromosome.
+translocated fragment that broke in two and was inverted before insertion). Any other change to a chromosome that no other mutation type explains also counts as one complex genomic rearrangement on that chromosome.
 - **Pericentric inversions:** a record with exactly three fragments, where the start and the end of the chromosome swap places (both
 reversed) and the middle fragment keeps its original orientation, is the same chromosome listed upside down. It is read from the other
 end, so it counts as 1 balanced inversion (or 1 deletion-inversion when a piece is missing).
@@ -269,22 +270,20 @@ end, so it counts as 1 balanced inversion (or 1 deletion-inversion when a piece 
 2. Chromosomes plotted with their associated homologs if specified, and structural rearrangements from the associated mutations. 
 3. The colors are used to depict where the chromosomal rearrangements came from, the white sections indicate where the deletions occurred on the 
 original chromosomes. Extrachromosomal DNA (ecDNA) is drawn as acentric circles with their diameters scaled to the length of the deleted segment for visual
-clarity.
-4. A legend of symbols at the bottom of the karyogram to denote what all the symbols mean, particularly for inversions and ecDNA.
+clarity. Red arrows adjacent to chromosomes depict fragments rearranged within the same chromosome.
+4. A legend of symbols at the bottom of the karyogram to denote what all the symbols mean, particularly for inversions, ecDNA, and moved pieces within the same chromosome.
 Material from a second homolog is outlined with a dashed line, including chromosome rings formed from a second homolog (dashed inner and outer circles).
 5. Every cell of a file is drawn at the same scale: the largest chromosome in the master header has the same height in every karyogram,
 so cells can be compared side by side. Rows keep their default height and only grow when they hold a derivative longer than the
 largest original chromosome.
-6. So far, drawing is supported for long deletions, balanced inversions, balanced translocations, ecDNA, deletion-inversions, deletion-translocations,
-and deletion-insertions, chromoplexy, chromothripsis and complex genomic rearrangements (as well as dicentrics and chromosome rings) 
-7. For chromoplexy and ecDNA leading to acentric strands composed of multiple foreign DNA fragments, they receive their own slots
+6. For chromoplexy and ecDNA leading to acentric strands composed of multiple foreign DNA fragments, they receive their own slots
 after the sex chromosomes. They are labeled such that the original chromosomes that compose the acentric strand are labeled and a '*' is 
 present to indicate it is a derivative, not an original chromosome strand. (see exampleSDR_dicentrics_rings_cell0_karyogram_human.png, produced with `--save-png`).
 Note: the multi-foreign-fragment ecDNA are depicted pie-chart style, to represent 'how much' of each original chromosome is present in the new ecDNA fragment. 
 
 <picture align = "center">
 <img src="images/SDR_karyogram.svg" width = "100%" alt="Different mutation representations from irradiated DNA"><br>
-<em> Depicting common DNA structural variations that arise from ionizing radiation.</em>
+<em> Chromosomal rearrangements caused by ionizing radiation.</em>
 </picture>
 
 
