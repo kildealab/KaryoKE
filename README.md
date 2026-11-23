@@ -1,4 +1,4 @@
-# KaryoKE v1.3 - <ins>Karyo</ins>grams for <ins>K</ins>aryotype <ins>E</ins>rrors
+# KaryoKE v1.4 - <ins>Karyo</ins>grams for <ins>K</ins>aryotype <ins>E</ins>rrors
 <p align = "center">
 <img src="images/logo/KaryoKE_logo.svg" alt="KaryoKE logo" width="500">
 </p>
@@ -8,7 +8,7 @@ Writing a C++ toolkit capable of parsing the Standard for DNA Damage<sup><a id="
 the Standard for DNA Repair<sup><a id="cite-2" href="#ref-2">[2]</a></sup> (SDR) header and data fields, and drawing the cairo-based karyogram visualizations
 of the associated damages and mutations. 
 
-**KaryoKE v1.3 is compatible with SDD version 1.0 and SDR version 2.2.**
+**KaryoKE v1.4 is compatible with SDD version 1.0 and SDR version 2.2.**
 
 This package is now capable of summarizing the SDD header fields and data fields into a single summary file. It can also optionally plot a 
 karyogram of the double-strand break and single-strand break locations onto the chromosomes the user passes in the SDD file header. 
@@ -107,8 +107,9 @@ file starts with the KaryoKE version that produced it. If `-kh` or `-ko` is pass
     and drag to pan. Karyograms are shown as vector images (SVG), so they stay sharp at any zoom level,
   - click a chromosome label to open a small summary for that chromosome, split into homolog 1 and homolog 2 when homologs are drawn.
     SDD karyograms list base damages, single-strand breaks and double-strand breaks; SDR karyograms list the mutations. Only the types
-    that are present are shown (otherwise "No damage detected" / "No mutations detected"). The SDR counts follow the same rules as the
-    per-chromosome section of the SDR summary file (see below). Close the summary with ×, Esc, or a click elsewhere,
+    that are present are shown (otherwise "No damage detected" / "No mutations detected"). Close the summary with ×, Esc, or a click elsewhere,
+  - click on the chromosomes themselves to see a zoomed in detailed view of a given chromosome. Hovering over different regions shows the 
+    damages/mutations in that chromosome region, and zooming in down to base pair resolution is supported. 
   - download the karyogram shown as a PNG or SVG, or all karyograms as a zip file.
 
 **With `--save-png` and/or `--save-svg`**, no viewer is created; instead one `<input>_cell<N>_karyogram_<human|other>.png` and/or `.svg`
@@ -129,7 +130,7 @@ file starts with the KaryoKE version that produced it. If `-kh` or `-ko` is pass
   final status line. For example:
 
 ```
-KaryoKE v1.3
+KaryoKE v1.4
 SDR file processing: exampleSDR.txt...
 Processing cell X/'TOTAL' (Cell ID Y)...
 Summary written to: "exampleSDR_summary.txt"
@@ -220,7 +221,7 @@ within a given damage site (i.e. a given SDD data row) (usually between 0-5 SSBs
    the top of the summary file explains this. A chromosome with a change that none of the other mutation types below explains is counted
    as one complex genomic rearrangement, in the per-chromosome list, the cell's mutation totals and the karyogram's summary box.
 6. Indel mutations are detected and counted in the SDR summary file (per cell and per chromosome), the summary box at the top of each
-   karyogram and the per-chromosome popups, but they are not drawn. Each indel site is counted once, under the chromosome that received it.
+   karyogram and the per-chromosome label popups, but they are not drawn. Each indel site is counted once, under the chromosome that received it.
 
 #### Size threshold between indels and structural variations
 
@@ -285,11 +286,6 @@ Note: the multi-foreign-fragment ecDNA are depicted pie-chart style, to represen
 <img src="images/SDR_karyogram.svg" width = "100%" alt="Different mutation representations from irradiated DNA"><br>
 <em> Chromosomal rearrangements caused by ionizing radiation.</em>
 </picture>
-
-
-## FURTHER WORK:
-1. Transform project into a website.
-... and much more.
 
 
 ---

@@ -716,6 +716,7 @@ int main(int argc, char* argv[]) 					// Command line, in this order: --sdd <fil
 		    image.hotspots = buildLabelHotspots(karyogram.getLabelRegions(),					// Clickable chromosome labels
 			countMutationsPerOriginalStrand(subHeader, parser.getMasterHeader()));
 		    image.popupNote = "Events involving several chromosomes are counted on each of them.";
+		    image.detailSlots = karyogram.getDetailSlots();					// Clickable homologs for the zoomed view
 		    output.viewerImages.push_back(std::move(image));
 		    continue;
 		}
@@ -839,6 +840,7 @@ int main(int argc, char* argv[]) 					// Command line, in this order: --sdd <fil
     	        image.hotspots = buildLabelHotspots(karyogram.getLabelRegions(),			// Clickable chromosome labels
     	            countDamagesPerChromosome(parser, exposure));
     	        image.popupEmptyText = "No damage detected";					// SDD files record damage, not mutations
+    	        image.detailSlots = karyogram.getDetailSlots();					// Clickable homologs for the zoomed view
     	        output.viewerImages.push_back(std::move(image));
     	        continue;
     	    }

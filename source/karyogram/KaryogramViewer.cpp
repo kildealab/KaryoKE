@@ -2,7 +2,10 @@
 #include "generalUtilities.h"
 #include "KaryoKEversion.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
@@ -93,6 +96,94 @@ namespace
             }
         }
         return quoted + "\"";
+    }
+
+    // Write a number for the viewer's <script> with enough digits to keep single bases apart on the longest chromosomes (e.g. 248.956422 Mbp).
+    std::string jsNumber(double value)
+    {
+        char buffer[32];
+        std::snprintf(buffer, sizeof(buffer), "%.10g", value);
+        return buffer;
+    }
+
+    // Write a 0-1 RGB colour as a CSS hex colour, e.g. "#3f8f6b".
+    std::string cssColor(double r, double g, double b)
+    {
+        const auto channel = [](double value) { return static_cast<int>(std::lround(std::min(1.0, std::max(0.0, value)) * 255.0)); };
+        char buffer[8];
+        std::snprintf(buffer, sizeof(buffer), "#%02x%02x%02x", channel(r), channel(g), channel(b));
+        return buffer;
+    }
+
+    // Write the clickable homologs of one karyogram as a JavaScript array for the zoomed homolog view: per slot its title and pieces, each piece
+    // with its clickable area on the karyogram and its segments, chevrons, arrows, boundary styles and indel markers in Mbp along the piece.
+    std::string detailSlotsJs(const std::vector<KaryogramDetailSlot>& slots)
+    {
+        std::string js = "[";
+
+        for (const KaryogramDetailSlot& slot : slots)
+        {
+            js += "\n      { title: " + jsString(slot.title) + ", pieces: [";
+
+            for (const KaryogramDetailPiece& piece : slot.pieces)
+            {
+                js += "\n        { x: " + jsNumber(piece.x) + ", y: " + jsNumber(piece.y) + ", w: " + jsNumber(piece.width) + ", h: " + jsNumber(piece.height)
+                    + ", caption: " + jsString(piece.caption) + ", len: " + jsNumber(piece.lengthMbp)
+                    + ", roundTop: " + (piece.roundTopCap ? "true" : "false") + ", roundBottom: " + (piece.roundBottomCap ? "true" : "false")
+                    + ", outline: " + (piece.outline ? "true" : "false") + ", circular: " + (piece.circular ? "true" : "false") + ",\n          segs: [";
+
+                for (const KaryogramDetailSegment& segment : piece.segments)		// [start, end, colour, gap, reversed, second homolog, centromere start, centromere end, original start, original end, origin name, foreign]
+                {
+                    js += "[" + jsNumber(segment.startMbp) + "," + jsNumber(segment.endMbp) + ",\"" + cssColor(segment.r, segment.g, segment.b) + "\","
+                        + (segment.gap ? "1" : "0") + "," + (segment.reversed ? "1" : "0") + "," + (segment.secondHomolog ? "1" : "0") + ","
+                        + jsNumber(segment.centromereStartMbp) + "," + jsNumber(segment.centromereEndMbp) + ","
+                        + jsNumber(segment.originStartMbp) + "," + jsNumber(segment.originEndMbp) + "," + jsString(segment.originName) + ","
+                        + (segment.foreign ? "1" : "0") + "],";
+                }
+
+                js += "],\n          chevrons: [";
+                for (const auto& [startMbp, endMbp] : piece.chevrons)
+                {
+                    js += "[" + jsNumber(startMbp) + "," + jsNumber(endMbp) + "],";
+                }
+
+                js += "], arrows: [";
+                for (const auto& [fromMbp, toMbp] : piece.movedArrows)
+                {
+                    js += "[" + jsNumber(fromMbp) + "," + jsNumber(toMbp) + "],";
+                }
+
+                js += "], dashed: [";
+                for (int boundary : piece.dashedBoundaries)
+                {
+                    js += std::to_string(boundary) + ",";
+                }
+
+                js += "], hidden: [";
+                for (int boundary : piece.hiddenBoundaries)
+                {
+                    js += std::to_string(boundary) + ",";
+                }
+
+                js += "], markers: [";
+                for (const KaryogramDetailMarker& marker : piece.markers)
+                {
+                    js += "[" + jsNumber(marker.positionMbp) + "," + jsString(marker.text) + "," + jsNumber(marker.deletedMbp) + "," + (marker.inserted ? "1" : "0") + "],";
+                }
+
+                js += "], damages: [";
+                for (const KaryogramDetailDamage& damage : piece.damages)		// [position, DSB, number of SSBs]
+                {
+                    js += "[" + jsNumber(damage.positionMbp) + "," + (damage.doubleStrandBreak ? "1" : "0") + "," + std::to_string(damage.singleStrandBreaks) + "],";
+                }
+
+                js += "] },";
+            }
+
+            js += " ] },";
+        }
+
+        return js + " ]";
     }
 
 #if !defined(_WIN32) && !defined(__APPLE__)
@@ -210,6 +301,31 @@ button, select { font-size: 14px; padding: 4px 10px; cursor: pointer; }
 #popup .note { margin-top: 8px; font-size: 11px; color: #777; }
 #popupClose { position: absolute; top: 4px; right: 6px; border: none; background: none; font-size: 18px; padding: 0 4px; }
 #hint { padding: 4px 16px; font-size: 12px; color: #666; background: #fff; border-top: 1px solid #ccc; }
+.piecespot { position: absolute; cursor: zoom-in; border-radius: 4px; }
+.piecespot:hover { outline: 2px solid rgba(30,110,220,0.7); outline-offset: 2px; }
+#detail { position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,0.35); display: flex; justify-content: center; padding: 20px; }
+#detail[hidden] { display: none; }
+#detailPanel { flex: 0 1 auto; width: 100%; min-width: 0; display: flex; flex-direction: column; background: #fff; border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,0.3); overflow: hidden; }
+#detailBar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid #ccc; }
+#detailTitle { font-size: 15px; font-weight: bold; }
+#detailCell, #detailScale { color: #555; font-size: 13px; }
+#detailScale { min-width: 120px; text-align: right; font-variant-numeric: tabular-nums; }
+#detailView { flex: 1; min-height: 0; overflow-x: auto; overflow-y: hidden; cursor: grab; user-select: none; touch-action: none; }
+#detailView.dragging { cursor: grabbing; }
+#detailSvg { display: block; }
+#detailSvg text { font-family: sans-serif; font-size: 12px; fill: #333; }
+#detailSvg .tick { font-size: 11px; fill: #555; font-variant-numeric: tabular-nums; }
+#detailSvg .caption { font-size: 12px; fill: #555; }
+#detailSvg .marker { cursor: pointer; }
+#detailSvg .marker text { fill: #1e6edc; }
+#detailSvg .inverted { font-size: 11px; fill: #333; }
+#detailTip { position: fixed; z-index: 30; pointer-events: none; background: #fff; border: 1px solid #bbb; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.25); padding: 6px 10px; font-size: 13px; line-height: 1.45; max-width: 280px; }
+#detailTip[hidden] { display: none; }
+#detailTip .site { font-weight: bold; font-variant-numeric: tabular-nums; }
+#detailTip .site + div, #detailTip .more { color: #333; }
+#detailTip .tipsite + .tipsite { margin-top: 6px; }
+#detailTip .head { color: #555; font-style: italic; margin-bottom: 4px; }
+#detailHint { padding: 4px 12px; font-size: 12px; color: #666; border-top: 1px solid #ccc; }
 </style>
 </head>
 <body>
@@ -253,7 +369,14 @@ button, select { font-size: 14px; padding: 4px 10px; cursor: pointer; }
 </header>
 <div id="viewport"><div id="stage"><div id="frame"><img id="karyogram" alt="Karyogram" draggable="false"><div id="hotspots"></div></div></div></div>
 <div id="popup" hidden role="dialog"><button id="popupClose" title="Close (Esc)">&times;</button><div id="popupBody"></div></div>
-<div id="hint">Click a chromosome label for its summary &middot; scroll or pinch to zoom at the cursor &middot; drag to pan &middot; double-click to zoom in &middot; keys: + &minus; 0 (fit) 1 (100%)</div>
+<div id="detail" hidden role="dialog" aria-label="Zoomed homolog"><div id="detailPanel">
+<div id="detailBar"><span id="detailTitle"></span><span id="detailCell"></span><div class="spacer"></div>
+<div class="group"><button id="detailOut" title="Zoom out (-)">&minus;</button><button id="detailIn" title="Zoom in (+)">+</button><button id="detailWhole" title="Show the whole homolog (0)">Whole homolog</button></div>
+<span id="detailScale"></span><button id="detailClose" title="Back to the karyogram (Esc)">Close &times;</button></div>
+<div id="detailView"><svg id="detailSvg" xmlns="http://www.w3.org/2000/svg"></svg></div>
+<div id="detailHint"></div>
+</div><div id="detailTip" hidden></div></div>
+<div id="hint">Click a chromosome for a zoomed view &middot; click a chromosome label for its summary &middot; scroll or pinch to zoom at the cursor &middot; drag to pan &middot; double-click to zoom in &middot; keys: + &minus; 0 (fit) 1 (100%)</div>
 )HTML";
 
     // ------------------------------------------
@@ -289,7 +412,8 @@ button, select { font-size: 14px; padding: 4px 10px; cursor: pointer; }
         }
 
         html << " ],\n    popupNote: " << jsString(image.popupNote)
-             << ",\n    popupEmptyText: " << jsString(image.popupEmptyText) << " },\n";
+             << ",\n    popupEmptyText: " << jsString(image.popupEmptyText)
+             << ",\n    detailSlots: " << detailSlotsJs(image.detailSlots) << " },\n";
     }
 
     // ------------------------------------------
@@ -396,14 +520,17 @@ viewport.addEventListener('pointerup', (e) => {
   // click target is looked up from the position: a chromosome label opens its popup, anywhere else closes it.
   if (drag && !drag.moved) {
     const spot = hotspotAt(e.clientX, e.clientY);
-    if (spot) openPopup(spot, e.clientX, e.clientY); else closePopup();
+    const slot = spot ? -1 : pieceSlotAt(e.clientX, e.clientY);
+    if (spot) openPopup(spot, e.clientX, e.clientY);
+    else if (slot >= 0) openDetail(slot);
+    else closePopup();
   }
   endDrag();
 });
 viewport.addEventListener('pointercancel', endDrag);
 
 viewport.addEventListener('dblclick', (e) => {
-  if (hotspotAt(e.clientX, e.clientY)) return;                       // Double-clicking a label should not also zoom.
+  if (hotspotAt(e.clientX, e.clientY) || pieceSlotAt(e.clientX, e.clientY) >= 0) return;   // Double-clicking a label or chromosome should not also zoom.
   const r = viewport.getBoundingClientRect();
   zoomBy(2, e.clientX - r.left, e.clientY - r.top);
 });
@@ -417,6 +544,7 @@ document.getElementById('next').onclick = () => show(current + 1);
 select.onchange = () => show(Number(select.value));
 
 document.addEventListener('keydown', (e) => {
+  if (!detail.hidden) { detailKey(e); return; }                      // Keys act on the zoomed homolog while it is open.
   if (e.key === 'Escape') { closePopup(); return; }
   if (e.target === select || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === '+' || e.key === '=') zoomBy(STEP);
@@ -443,6 +571,26 @@ function placeHotspots() {
     box.style.height = (100 * spot.h / h) + '%';
     hotspotLayer.appendChild(box);
   });
+  // One box per drawn piece of a homolog (chromosome, excised piece, ecDNA or ring), opening that homolog's zoomed view.
+  (karyograms[current].detailSlots || []).forEach((slot, i) => {
+    for (const piece of slot.pieces) {
+      const box = document.createElement('div');
+      box.className = 'piecespot';
+      box.dataset.slot = i;
+      box.title = slot.title + ': click for a zoomed view';
+      box.style.left = (100 * piece.x / w) + '%';
+      box.style.top = (100 * piece.y / h) + '%';
+      box.style.width = (100 * piece.w / w) + '%';
+      box.style.height = (100 * piece.h / h) + '%';
+      hotspotLayer.appendChild(box);
+    }
+  });
+}
+
+// Index of the homolog slot whose piece is under the screen point, or -1.
+function pieceSlotAt(x, y) {
+  const box = document.elementFromPoint(x, y)?.closest('.piecespot');
+  return box ? Number(box.dataset.slot) : -1;
 }
 
 function hotspotAt(x, y) {
@@ -482,6 +630,547 @@ function openPopup(spot, x, y) {
 
 function closePopup() { popup.hidden = true; }
 document.getElementById('popupClose').onclick = closePopup;
+
+// ------------------------------------------------------------
+// Zoomed homolog view: one homolog redrawn at its true size, with a base-pair ruler, zoomable down to single bases
+// ------------------------------------------------------------
+const detail = document.getElementById('detail');
+const detailView = document.getElementById('detailView');
+const detailSvg = document.getElementById('detailSvg');
+const detailScale = document.getElementById('detailScale');
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const D_MIN_MBP_PER_PX = 0.000001 / 12;     // Deepest zoom: 12 px per base.
+const D_TOP = 44, D_BOTTOM = 24;            // Room above the pieces (captions) and below them at "whole homolog".
+const D_WIDTH = 56;                         // Drawn width of a piece; the karyogram's details (pinch, dashes) are scaled from its 20 px.
+const D_K = D_WIDTH / 20;
+let dSlot = null, dTop = 0, dMbpPerPx = 1, dDrag = null, dClipId = 0, dColumns = [];
+const detailTip = document.getElementById('detailTip');
+
+// Opens the zoomed view of one homolog slot of the karyogram shown, fitted to the window. Alters the view state and shows the overlay.
+function openDetail(slotIndex) {
+  dSlot = karyograms[current].detailSlots[slotIndex];
+  if (!dSlot) return;
+  closePopup();
+  document.getElementById('detailTitle').textContent = dSlot.title;
+  document.getElementById('detailCell').textContent = select.options[current].text;
+  const sdd = dSlot.pieces.some((p) => p.damages.length);
+  document.getElementById('detailHint').textContent = 'Scroll or pinch to zoom at the cursor · drag to move along the homolog · '
+    + (sdd ? 'point at (or tap) a damage site for its breaks · the ruler gives the position from the p-arm end'
+           : 'point at a deleted, inverted, translocated or rearranged segment, or an excised piece, for its span · click a blue pointer to zoom to that indel · ecDNA and rings are drawn as circles sized by their length, not to the ruler scale · the ruler gives the position along each piece, from its top end');
+  detail.hidden = false;
+  detailWhole();
+}
+
+// Closes the zoomed view and returns to the karyogram.
+function closeDetail() { detail.hidden = true; dSlot = null; detailSvg.replaceChildren(); hideDamageTip(); }
+
+// Length of the longest linear piece of the open slot, in Mbp: the ruler runs from 0 to here. Circles (ecDNA, rings) are not on the ruler.
+function detailLength() {
+  const linear = dSlot.pieces.filter((p) => !p.circular);
+  return Math.max(1e-6, ...(linear.length ? linear : dSlot.pieces).map((p) => p.len));
+}
+
+// Screen diameter of a circular piece: a 40 px minimum, so its colours always show, plus its length in pixels of the ruler at
+// "whole homolog" (at most 200 px in all). Fixed while zooming, since the circle is not drawn to the ruler's scale.
+function circleDiameter(piece) {
+  const whole = Math.max(40, detailView.clientHeight - D_TOP - D_BOTTOM);
+  return Math.min(200, 40 + whole * piece.len / detailLength());
+}
+
+// Original spans [from, to] of the material of a piece, in Mbp: stretches of one colour that continue each other (within a base) are joined.
+function pieceSpans(piece) {
+  const spans = [];
+  for (const s of piece.segs) {
+    if (s[3] || s[8] < 0) continue;
+    const last = spans[spans.length - 1];
+    if (last && last.color === s[2] && Math.abs(s[8] - last.to) <= 1.5e-6) last.to = s[9];
+    else if (last && last.color === s[2] && Math.abs(s[9] - last.from) <= 1.5e-6) last.from = s[8];
+    else spans.push({ from: s[8], to: s[9], color: s[2] });
+  }
+  return spans;
+}
+
+// Label lines of a circular piece: "ecDNA: X Mbp – Y Mbp" (or "Ring: ..."), the original span of its material; further spans of a circle
+// made of several pieces follow on lines of their own (at most four, then how many more).
+function circleCaption(piece) {
+  const mbp = (value) => String(Number(value.toFixed(6))) + ' Mbp';
+  const spans = pieceSpans(piece).map((s) => `${mbp(s.from)} – ${mbp(s.to)}`);
+  const kind = /^Ring/.test(piece.caption) ? 'Ring' : 'ecDNA';
+  if (!spans.length) return [kind];
+  const lines = [`${kind}: ${spans[0]}`, ...spans.slice(1, 4)];
+  if (spans.length > 4) lines.push(`and ${spans.length - 4} more`);
+  return lines;
+}
+
+// Draws a circular piece (ecDNA or ring) as a disc at a fixed screen place below the captions: one wedge per segment in its colour, clockwise
+// from the top, white wedges for deleted bases, and a grey dot on the rim at a ring's centromere. Alters the SVG only.
+function drawDetailCircle(svg, piece, column) {
+  const d = column.diameter, r = d / 2, cx = column.x + r, cy = column.y + r, len = Math.max(1e-12, piece.len);
+  const point = (mbp, radius) => { const a = 2 * Math.PI * mbp / len; return [cx + radius * Math.sin(a), cy - radius * Math.cos(a)]; };
+  const wedge = (startMbp, endMbp, fill) => {
+    if (endMbp - startMbp >= len - 1e-12) { svgElement(svg, 'circle', { cx, cy, r, fill }); return; }
+    const [x0, y0] = point(startMbp, r), [x1, y1] = point(endMbp, r), large = (endMbp - startMbp) / len > 0.5 ? 1 : 0;
+    svgElement(svg, 'path', { d: `M${cx},${cy} L${x0},${y0} A${r},${r} 0 ${large} 1 ${x1},${y1} Z`, fill, stroke: fill, 'stroke-width': 0.6 });
+  };
+  const minMbp = len / 360;                                          // A deleted stretch is at least one degree wide, so it stays visible
+  for (const s of piece.segs) if (!s[3]) wedge(s[0], s[1], s[2]);
+  const gaps = piece.segs.filter((s) => s[3]).map((s) => [s[0], s[1]]).concat(piece.markers.filter((m) => m[2] > 0).map((m) => [m[0], m[0] + m[2]]));
+  for (const [a, b] of gaps) { const c = (a + b) / 2, half = Math.max(b - a, minMbp) / 2; wedge(c - half, c + half, '#ffffff'); }
+  svgElement(svg, 'circle', { cx, cy, r, fill: 'none', stroke: '#1a1a1a', 'stroke-width': 1.5 });
+  for (const s of piece.segs) {
+    if (s[6] < 0) continue;
+    const [px, py] = point((s[6] + s[7]) / 2, r);
+    svgElement(svg, 'circle', { cx: px, cy: py, r: 5, fill: '#999999' });
+  }
+  column.caption.forEach((line, i) => svgElement(svg, 'text', { x: column.x, y: column.y + d + 16 + 15 * i, class: i ? 'tick' : 'caption' }, line));
+}
+
+// Keeps the zoom between "whole homolog" and 12 px per base, and the view on the homolog. Alters dTop and dMbpPerPx.
+function detailClamp() {
+  const h = detailView.clientHeight, len = detailLength();
+  const maxMbpPerPx = len / Math.max(40, h - D_TOP - D_BOTTOM);
+  dMbpPerPx = Math.min(maxMbpPerPx, Math.max(D_MIN_MBP_PER_PX, dMbpPerPx));
+  dTop = Math.min(len + D_BOTTOM * dMbpPerPx - h * dMbpPerPx, Math.max(-D_TOP * dMbpPerPx, dTop));
+}
+
+// Shows the whole homolog. Alters the view state and redraws.
+function detailWhole() { dMbpPerPx = Infinity; dTop = -Infinity; detailRender(); }
+
+// Zooms by factor around a screen y position (relative to the view), keeping the base under it in place. Alters the view state and redraws.
+function detailZoomAt(factor, screenY) {
+  if (screenY === undefined) screenY = detailView.clientHeight / 2;
+  const at = dTop + screenY * dMbpPerPx;
+  dMbpPerPx /= factor; detailClamp();
+  dTop = at - screenY * dMbpPerPx;
+  detailRender();
+}
+
+// Centres the view on a position and zooms in so about 400 bases fill the height. Alters the view state and redraws.
+function detailJumpTo(mbp) {
+  const h = detailView.clientHeight;
+  dMbpPerPx = Math.max(D_MIN_MBP_PER_PX, 0.0004 / h);
+  dTop = mbp - (h / 2) * dMbpPerPx;
+  detailRender();
+}
+
+// Creates one SVG element with the given attributes (and text) inside parent.
+function svgElement(parent, tag, attrs, text) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const key in attrs) node.setAttribute(key, attrs[key]);
+  if (text !== undefined) node.textContent = text;
+  parent.appendChild(node);
+  return node;
+}
+
+// Tick spacing in Mbp: 1, 2 or 5 times a power of ten bases, about one tick per 70 px.
+function tickStep() {
+  const bases = dMbpPerPx * 70 * 1e6;
+  const power = Math.pow(10, Math.floor(Math.log10(bases)));
+  const m = bases / power;
+  return Math.max(1, (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * power) / 1e6;
+}
+
+// Formats a ruler position with the unit that suits the tick spacing: Mbp, kbp or single bases.
+function formatPosition(mbp, step) {
+  if (step >= 0.1) return mbp.toFixed(step >= 1 ? 0 : 1) + ' Mbp';
+  if (step >= 0.0001) return (mbp * 1000).toLocaleString('en-US', { maximumFractionDigits: step >= 0.001 ? 0 : 1 }) + ' kbp';
+  return Math.round(mbp * 1e6).toLocaleString('en-US') + ' bp';
+}
+
+// Formats a stretch of the piece, e.g. "50.0 – 70.0 Mbp", or in single bases when it is shorter than 1 Mbp.
+function formatRange(startMbp, endMbp) {
+  if (endMbp - startMbp >= 1) return `${startMbp.toFixed(1)} – ${endMbp.toFixed(1)} Mbp`;
+  const bp = (mbp) => Math.round(mbp * 1e6).toLocaleString('en-US');
+  return `${bp(startMbp)} – ${bp(endMbp)} bp`;
+}
+
+// Formats a length for the scale readout and labels, e.g. "1.4 Mbp", "12 kbp", "47 bp".
+function formatLength(mbp) {
+  const bp = mbp * 1e6;
+  if (bp >= 1e6) return (bp / 1e6).toPrecision(3).replace(/\.?0+$/, '') + ' Mbp';
+  if (bp >= 1e3) return (bp / 1e3).toPrecision(3).replace(/\.?0+$/, '') + ' kbp';
+  return (bp >= 10 ? Math.round(bp) : bp.toPrecision(2).replace(/\.?0+$/, '')) + ' bp';
+}
+
+// Outline of a piece between screen y top and bottom: rounded or flat ends (an end off screen is flat) and the centromere pinch on both sides.
+function piecePath(x, top, bottom, roundTop, roundBottom, pinches) {
+  const w = D_WIDTH, r = w / 2, depth = 2 * D_K, half = 3.5 * D_K;
+  const capTop = roundTop && bottom - top > w, capBottom = roundBottom && bottom - top > w;
+  let d = capTop ? `M${x},${top + r} A${r},${r} 0 0 1 ${x + w},${top + r}` : `M${x},${top} L${x + w},${top}`;
+  for (const cy of pinches) d += ` L${x + w},${cy - half} L${x + w - depth},${cy} L${x + w},${cy + half}`;
+  d += capBottom ? ` L${x + w},${bottom - r} A${r},${r} 0 0 1 ${x},${bottom - r}` : ` L${x + w},${bottom} L${x},${bottom}`;
+  for (const cy of [...pinches].reverse()) d += ` L${x},${cy + half} L${x + depth},${cy} L${x},${cy - half}`;
+  return d + ' Z';
+}
+
+// Draws one piece of the slot at column x: fills, white gaps, boundaries, outline, centromeres, one chevron per inverted stretch,
+// moved-piece arrows and indel pointers, all placed with the current zoom. Alters the SVG only.
+function drawDetailPiece(svg, piece, x, h) {
+  const y = (mbp) => (mbp - dTop) / dMbpPerPx;
+  const far = D_WIDTH * 2;
+  const top = Math.max(-far, y(0)), bottom = Math.min(h + far, y(piece.len));
+  if (bottom < -far || top > h + far) return;
+  const roundTop = piece.roundTop && y(0) > -far, roundBottom = piece.roundBottom && y(piece.len) < h + far;
+  const segs = piece.segs.map((s) => ({ start: s[0], end: s[1], color: s[2], gap: !!s[3], rev: !!s[4], second: !!s[5], cenStart: s[6], cenEnd: s[7] }));
+  const cens = segs.filter((s) => s.cenStart >= 0).map((s) => ({ top: y(s.cenStart), bottom: y(s.cenEnd) }));
+  const pinches = cens.map((c) => (c.top + c.bottom) / 2).filter((cy) => cy > top && cy < bottom);
+  const outlinePath = piecePath(x, top, bottom, roundTop, roundBottom, pinches);
+  const clipId = 'dclip' + (++dClipId);
+  svgElement(svgElement(svg, 'clipPath', { id: clipId }), 'path', { d: outlinePath });
+  const body = svgElement(svg, 'g', { 'clip-path': `url(#${clipId})` });
+  const visible = (a, b) => b >= -far && a <= h + far;
+  const clampY = (v) => Math.max(-far, Math.min(h + far, v));
+
+  // Fills, then white gaps padded to at least 1 px so even a few deleted bases stay visible.
+  for (const s of segs) {
+    if (s.gap || !visible(y(s.start), y(s.end))) continue;
+    svgElement(body, 'rect', { x, y: clampY(y(s.start)), width: D_WIDTH, height: Math.max(0.3, clampY(y(s.end)) - clampY(y(s.start))), fill: s.color });
+  }
+  // Indels are taken out of the karyogram drawing, so the piece runs through them: their deleted bases are drawn here as white gaps too,
+  // and inserted bases as a blue line across the piece at the site.
+  const gaps = segs.filter((s) => s.gap).map((s) => [s.start, s.end]).concat(piece.markers.filter((m) => m[2] > 0).map((m) => [m[0], m[0] + m[2]]));
+  for (const [startMbp, endMbp] of gaps) {
+    if (!visible(y(startMbp), y(endMbp))) continue;
+    let a = clampY(y(startMbp)), b = clampY(y(endMbp));
+    if (b - a < 1) { const c = (a + b) / 2; a = c - 0.5; b = c + 0.5; }
+    svgElement(body, 'rect', { x, y: a, width: D_WIDTH, height: b - a, fill: '#ffffff' });
+  }
+  for (const [mbp, , , inserted] of piece.markers) {
+    if (inserted && y(mbp) > -2 && y(mbp) < h + 2) svgElement(body, 'line', { x1: x, y1: y(mbp), x2: x + D_WIDTH, y2: y(mbp), stroke: '#1e6edc', 'stroke-width': 2 });
+  }
+
+  // One chevron per inverted stretch, stretched over the whole stretch at every zoom: apex at its top centre, arms to its bottom corners.
+  // Only the part of each arm that is on screen is drawn, so very deep zooms never build huge coordinates.
+  const labels = [];
+  for (const [startMbp, endMbp] of piece.chevrons) {
+    const yTop = y(startMbp), yBottom = y(endMbp);
+    if (!visible(yTop, yBottom)) continue;
+    const from = Math.max(yTop, -far), to = Math.min(yBottom, h + far), span = Math.max(1e-9, yBottom - yTop);
+    const armX = (screenY) => (D_WIDTH / 2) * (screenY - yTop) / span;
+    const cx = x + D_WIDTH / 2;
+    svgElement(body, 'path', { d: `M${cx - armX(from)},${from} L${cx - armX(to)},${to} M${cx + armX(from)},${from} L${cx + armX(to)},${to}`,
+      fill: 'none', stroke: '#000', 'stroke-width': 2, 'stroke-linejoin': 'round' });
+    if (yTop < 26 && yBottom > 50) labels.push([Math.max(26, yTop) + 16, `Inverted ${formatRange(startMbp, endMbp)}`]);
+  }
+
+  // Boundaries between segments, by the karyogram's rules: none next to a white gap or an inverted piece, none where a moved piece was cut
+  // out, dashed at a moved piece's new place.
+  const dashedSet = new Set(piece.dashed), hiddenSet = new Set(piece.hidden);
+  for (let i = 0; i + 1 < segs.length; i++) {
+    const dashed = dashedSet.has(i + 1), a = segs[i], b = segs[i + 1];
+    if ((a.gap || b.gap) && (!dashed || (a.gap && b.gap))) continue;
+    if (!dashed && (a.rev || b.rev || hiddenSet.has(i + 1))) continue;
+    const by = y(a.end);
+    if (by < -2 || by > h + 2) continue;
+    svgElement(body, 'line', { x1: x, y1: by, x2: x + D_WIDTH, y2: by, stroke: '#000', 'stroke-width': 1, 'stroke-dasharray': dashed ? '6 4' : 'none' });
+  }
+
+  // Outline: dashed along material from a second homolog (a white gap takes the style of the nearest piece above, else below), solid elsewhere.
+  if (piece.outline) {
+    const dashedRun = segs.map((s, i) => {
+      if (!s.gap) return s.second;
+      for (let j = i - 1; j >= 0; j--) if (!segs[j].gap) return segs[j].second;
+      for (let j = i + 1; j < segs.length; j++) if (!segs[j].gap) return segs[j].second;
+      return false;
+    });
+    for (let start = 0; start < segs.length;) {
+      let end = start;
+      while (end + 1 < segs.length && dashedRun[end + 1] === dashedRun[start]) end++;
+      const runTop = start === 0 ? -1e4 : clampY(y(segs[start].start)), runBottom = end === segs.length - 1 ? h + 1e4 : clampY(y(segs[end].end));
+      const runClip = 'dclip' + (++dClipId);
+      svgElement(svgElement(svg, 'clipPath', { id: runClip }), 'rect', { x: x - 10, y: runTop, width: D_WIDTH + 20, height: Math.max(0, runBottom - runTop) });
+      svgElement(svg, 'path', { d: outlinePath, fill: 'none', stroke: '#1a1a1a', 'stroke-width': 1.5, 'clip-path': `url(#${runClip})`,
+        'stroke-dasharray': dashedRun[start] ? '8 6' : 'none' });
+      start = end + 1;
+    }
+  }
+
+  // Centromeres: grey ellipse over the centromere, at least 5 px tall; a centromere far taller than the window is drawn as a band.
+  for (const c of cens) {
+    if (!visible(c.top, c.bottom)) continue;
+    const height = Math.max(5, c.bottom - c.top), cy = (c.top + c.bottom) / 2;
+    if (height > 4 * h) svgElement(svg, 'rect', { x: x - 1, y: clampY(c.top), width: D_WIDTH + 2, height: clampY(c.bottom) - clampY(c.top), fill: '#999999' });
+    else svgElement(svg, 'ellipse', { cx: x + D_WIDTH / 2, cy, rx: D_WIDTH / 2 + 1, ry: height / 2, fill: '#999999' });
+  }
+
+  // SDD damage sites, as on the karyogram: a black line past both edges for a DSB, then a white line for the SSBs that gets longer with their number.
+  for (const [mbp, dsb] of piece.damages) {
+    const dy = y(mbp);
+    if (dsb && dy > -2 && dy < h + 2) svgElement(svg, 'line', { x1: x - 4 * D_K, y1: dy, x2: x + D_WIDTH + 4 * D_K, y2: dy, stroke: '#000', 'stroke-width': 1.5 });
+  }
+  for (const [mbp, , ssbs] of piece.damages) {
+    const dy = y(mbp);
+    if (ssbs <= 0 || dy < -2 || dy > h + 2) continue;
+    const half = Math.min(D_WIDTH, (4 + 4 * (ssbs - 1)) * D_K) / 2;
+    svgElement(svg, 'line', { x1: x + D_WIDTH / 2 - half, y1: dy, x2: x + D_WIDTH / 2 + half, y2: dy, stroke: '#fff', 'stroke-width': 2 });
+  }
+
+  // Red hooked arrows of pieces moved within the chromosome, from where they were cut out to their middle, on the left of the piece.
+  piece.arrows.forEach(([fromMbp, toMbp], i) => {
+    const fromY = Math.max(-h, Math.min(2 * h, y(fromMbp))), toY = Math.max(-h, Math.min(2 * h, y(toMbp)));
+    const tipX = x - 1, headBase = tipX - 9, bulge = Math.min(48, Math.max(16, 0.6 * Math.abs(toY - fromY))) + 6 * i;
+    const g = svgElement(svg, 'g', { fill: '#bf382b', stroke: '#bf382b' });
+    svgElement(g, 'circle', { cx: tipX, cy: fromY, r: 2.2, stroke: 'none' });
+    svgElement(g, 'path', { d: `M${tipX},${fromY} C${x - bulge},${fromY} ${x - bulge},${toY} ${headBase + 1},${toY}`, fill: 'none', 'stroke-width': 1.8, 'stroke-linecap': 'round' });
+    svgElement(g, 'path', { d: `M${tipX},${toY} L${headBase},${toY - 5} L${headBase + 2},${toY} L${headBase},${toY + 5} Z`, stroke: 'none' });
+  });
+
+  // Labels for inverted stretches whose chevron tip is above the window, so the inversion is still named.
+  for (const [labelY, text] of labels) svgElement(svg, 'text', { x: x + D_WIDTH + 8, y: labelY, class: 'inverted' }, text);
+
+  // Indels: never drawn on the karyogram, marked here with a pointer and their size; a click on one zooms to it.
+  for (const [mbp, text] of piece.markers) {
+    const my = y(mbp);
+    if (my < -8 || my > h + 8) continue;
+    const g = svgElement(svg, 'g', { class: 'marker', 'data-mbp': mbp });
+    svgElement(g, 'path', { d: `M${x + D_WIDTH + 3},${my} l10,-6 v12 z`, fill: '#1e6edc' });
+    svgElement(g, 'text', { x: x + D_WIDTH + 16, y: my + 4 }, text);
+  }
+}
+
+// Redraws the open slot: ruler on the left, then each piece in its own column, captions on top. Alters the SVG and the scale readout.
+function detailRender() {
+  if (!dSlot) return;
+  detailClamp();
+  const h = detailView.clientHeight;
+  const y = (mbp) => (mbp - dTop) / dMbpPerPx;
+  dClipId = 0;
+  detailSvg.replaceChildren();
+
+  // Columns: room on the left of a piece for its arrows, on the right for indel and inversion labels.
+  let rulerX = 100;
+  let x = rulerX + 30;
+  const columns = dSlot.pieces.filter((piece) => !piece.circular).map((piece) => {
+    const left = piece.arrows.length ? 40 + 6 * piece.arrows.length : 0;
+    const captionWidth = 7 * (piece.caption ? piece.caption.length : 0);   // Rough width of the caption
+    const labelRoom = piece.markers.length ? 200 : piece.chevrons.length ? 150 : 24;   // Indel and "Inverted ..." labels go right of the piece
+    const right = Math.max(labelRoom, captionWidth - D_WIDTH + 16);
+    const column = { piece, x: x + left };
+    x += left + D_WIDTH + right;
+    return column;
+  });
+  // Circles (ecDNA, rings) are stacked top to bottom after the linear pieces, each with its label below it, fixed while zooming;
+  // a circle that no longer fits the height starts a new stack to the right.
+  let stackY = 36, stackWidth = 0;
+  for (const piece of dSlot.pieces.filter((p) => p.circular)) {
+    const diameter = circleDiameter(piece), caption = circleCaption(piece);
+    const height = diameter + 8 + 15 * caption.length + 18;
+    if (stackWidth && stackY + height > h) { x += stackWidth + 24; stackY = 36; stackWidth = 0; }
+    columns.push({ piece, x, y: stackY, diameter, caption });
+    stackY += height;
+    stackWidth = Math.max(stackWidth, diameter, 7 * Math.max(...caption.map((line) => line.length)));
+  }
+  if (stackWidth) x += stackWidth + 24;
+  // The panel is only as wide as its pieces need (at least wide enough for its toolbar, at most the window), so one homolog is not
+  // left beside empty space. Wider content scrolls sideways.
+  const panel = document.getElementById('detailPanel');
+  panel.style.width = Math.min(window.innerWidth - 40, Math.max(760, x + 24)) + 'px';
+  const width = Math.max(detailView.clientWidth, x);
+  const shift = Math.max(0, (width - x) / 2);                       // Centre the ruler and pieces when the panel is wider than they are
+  for (const column of columns) column.x += shift;
+  detailSvg.setAttribute('width', width);
+  detailSvg.setAttribute('height', h);
+  detailSvg.setAttribute('viewBox', `0 0 ${width} ${h}`);
+
+  for (const column of columns) {
+    if (column.piece.circular) drawDetailCircle(detailSvg, column.piece, column);
+    else drawDetailPiece(detailSvg, column.piece, column.x, h);
+  }
+  dColumns = columns;
+
+  // Ruler: position along the homolog as drawn, continuous from its top end, with round ticks that follow the zoom.
+  // A slot of circles only (ecDNA joining several chromosomes) has nothing on the ruler, so it gets none.
+  const len = detailLength(), step = tickStep();
+  rulerX += shift;
+  if (dSlot.pieces.every((p) => p.circular)) rulerX = -1000;
+  svgElement(detailSvg, 'line', { x1: rulerX, y1: Math.max(0, y(0)), x2: rulerX, y2: Math.min(h, y(len)), stroke: '#888' });
+  const last = Math.min(len, dTop + h * dMbpPerPx);
+  for (let i = Math.max(0, Math.ceil(dTop / step)); i * step <= last + 1e-12; i++) {
+    const t = i * step, ty = y(t);
+    svgElement(detailSvg, 'line', { x1: rulerX - 6, y1: ty, x2: rulerX, y2: ty, stroke: '#555' });
+    svgElement(detailSvg, 'text', { x: rulerX - 9, y: ty + 4, 'text-anchor': 'end', class: 'tick' }, formatPosition(t, step));
+  }
+
+  // Captions (e.g. "Excised piece") stay at the top of the window; the chromosome itself has none, the ruler gives its length.
+  svgElement(detailSvg, 'rect', { x: 0, y: 0, width, height: 26, fill: '#ffffff' });
+  for (const column of columns) {
+    if (column.piece.circular) continue;                            // Circles carry their label below them
+    if (column.piece.caption) svgElement(detailSvg, 'text', { x: column.x, y: 17, class: 'caption' }, column.piece.caption);
+  }
+
+  const pxPerBase = 1 / (dMbpPerPx * 1e6);
+  detailScale.textContent = pxPerBase >= 1 ? `1 base = ${pxPerBase.toFixed(1)} px` : `1 px = ${formatLength(dMbpPerPx)}`;
+}
+
+// SDD damage sites within a few pixels of a screen point in the zoomed view, nearest first.
+function damageSitesAt(clientX, clientY) {
+  const r = detailSvg.getBoundingClientRect(), px = clientX - r.left, py = clientY - r.top;
+  const column = dColumns.find((c) => !c.piece.circular && px >= c.x - 4 * D_K - 4 && px <= c.x + D_WIDTH + 4 * D_K + 4);
+  if (!column) return [];
+  return column.piece.damages
+    .map(([mbp, dsb, ssbs]) => ({ mbp, dsb, ssbs, distance: Math.abs((mbp - dTop) / dMbpPerPx - py) }))
+    .filter((site) => site.distance <= 4)
+    .sort((a, b) => a.distance - b.distance || a.mbp - b.mbp);
+}
+
+// Shows what the damage sites under the pointer are: per site its position, "Double Strand Break" when there is one and the number of SSBs.
+// Sites closer together than the screen can separate are listed together. Alters the tooltip only.
+function showDamageTip(clientX, clientY) {
+  const sites = damageSitesAt(clientX, clientY);
+  if (!sites.length) { hideDamageTip(); return; }
+  detailTip.replaceChildren();
+  if (sites.length > 1) addElement(detailTip, 'div', `${sites.length} damage sites here, zoom in to separate them`, 'head');
+  for (const site of sites.slice(0, 6)) {
+    const group = addElement(detailTip, 'div', undefined, 'tipsite');
+    addElement(group, 'div', Math.round(site.mbp * 1e6).toLocaleString('en-US') + ' bp', 'site');
+    if (site.dsb) addElement(group, 'div', 'Double Strand Break');
+    if (site.ssbs > 0) addElement(group, 'div', 'Single Strand Breaks = ' + site.ssbs);
+  }
+  if (sites.length > 6) addElement(detailTip, 'div', `and ${sites.length - 6} more`, 'more');
+  detailTip.hidden = false;
+  const box = detailTip.getBoundingClientRect();
+  detailTip.style.left = Math.max(8, Math.min(clientX + 14, window.innerWidth - box.width - 8)) + 'px';
+  detailTip.style.top = Math.max(8, Math.min(clientY + 14, window.innerHeight - box.height - 8)) + 'px';
+}
+
+function hideDamageTip() { detailTip.hidden = true; }
+
+// Formats an original span in Mbp with up to six decimals (single bases), e.g. "40.000001 – 60 Mbp".
+function formatSpan(startMbp, endMbp) {
+  const mbp = (value) => String(Number(value.toFixed(6)));
+  return `${mbp(startMbp)} – ${mbp(endMbp)} Mbp`;
+}
+
+// Indexes of the segments of a chromosome that are its own material still in its original order: the longest run (in drawn order) of its own
+// forward segments whose original positions keep increasing. Its other own forward segments were moved within the chromosome. Cached on the piece.
+function inPlaceSegments(piece) {
+  if (piece.inPlace) return piece.inPlace;
+  const own = [];
+  piece.segs.forEach((s, i) => { if (!s[3] && !s[4] && !s[11] && s[8] >= 0) own.push(i); });
+  const best = own.map(() => 1), previous = own.map(() => -1);
+  for (let a = 0; a < own.length; a++) {
+    for (let b = 0; b < a; b++) {
+      if (piece.segs[own[b]][8] < piece.segs[own[a]][8] && best[b] + 1 > best[a]) { best[a] = best[b] + 1; previous[a] = b; }
+    }
+  }
+  piece.inPlace = new Set();
+  let k = best.indexOf(Math.max(0, ...best));
+  while (k >= 0) { piece.inPlace.add(own[k]); k = previous[k]; }
+  return piece.inPlace;
+}
+
+// What the pointer is over in an SDR piece, when it is worth a tooltip: a white deletion gap (at least 3 px wide to aim at), a segment of a
+// chromosome that is not its own material in its original place (inverted, translocated in, or moved within the chromosome), or any part of
+// an excised piece. Circles (ecDNA, rings) get none, their label already gives their span. Returns the tooltip lines, the first one bold, or null.
+function segmentTipAt(clientX, clientY) {
+  const r = detailSvg.getBoundingClientRect(), px = clientX - r.left, py = clientY - r.top;
+  const column = dColumns.find((c) => !c.piece.circular && px >= c.x && px <= c.x + D_WIDTH);
+  if (!column || column.piece.damages.length) return null;
+  const piece = column.piece, at = dTop + py * dMbpPerPx, slack = 1.5 * dMbpPerPx;
+  if (at < 0 || at > piece.len) return null;
+  const segs = piece.segs.map((s) => ({ start: s[0], end: s[1], gap: !!s[3], from: s[8], to: s[9] }));
+  const gap = segs.find((s) => s.gap && at >= s.start - slack && at <= s.end + slack);
+  if (gap) {
+    const lines = ['Deleted segment'];
+    if (gap.from >= 0) lines.push(formatSpan(gap.from, gap.to));
+    return lines;
+  }
+  if (!piece.outline) return spanLines('Excised piece', piece);      // An excised piece describes its whole span
+  const index = piece.segs.findIndex((s) => !s[3] && at >= s[0] && at <= s[1]);
+  if (index < 0) return null;
+  const seg = piece.segs[index], from = seg[8], to = seg[9], name = seg[10], foreign = !!seg[11], inverted = !!seg[4];
+  if (from < 0 || (!inverted && !foreign && inPlaceSegments(piece).has(index))) return null;   // Own material in its place: nothing to add
+  const lines = [inverted ? 'Inverted segment' : foreign ? 'Translocated segment' : 'Rearranged segment'];
+  if (foreign && name) lines.push('From ' + name);
+  lines.push(formatSpan(from, to));
+  return lines;
+}
+
+// Tooltip lines naming a piece and listing the original span of its material (up to six stretches).
+function spanLines(name, piece) {
+  const known = pieceSpans(piece);
+  const lines = [name];
+  for (const s of known.slice(0, 6)) lines.push(formatSpan(s.from, s.to));
+  if (known.length > 6) lines.push(`and ${known.length - 6} more pieces`);
+  return lines;
+}
+
+// Shows the tooltip for whatever is under the pointer: SDD damage sites first, otherwise the span of a deleted segment or excised piece (circles carry their span in their label).
+function showDetailTip(clientX, clientY) {
+  if (damageSitesAt(clientX, clientY).length) { showDamageTip(clientX, clientY); return; }
+  const lines = segmentTipAt(clientX, clientY);
+  if (!lines) { hideDamageTip(); return; }
+  detailTip.replaceChildren();
+  const group = addElement(detailTip, 'div', undefined, 'tipsite');
+  lines.forEach((line, i) => addElement(group, 'div', line, i === 0 ? 'site' : undefined));
+  detailTip.hidden = false;
+  const box = detailTip.getBoundingClientRect();
+  detailTip.style.left = Math.max(8, Math.min(clientX + 14, window.innerWidth - box.width - 8)) + 'px';
+  detailTip.style.top = Math.max(8, Math.min(clientY + 14, window.innerHeight - box.height - 8)) + 'px';
+}
+
+// Keyboard in the zoomed view: Esc closes, + and - zoom, 0 shows the whole homolog.
+function detailKey(e) {
+  if (e.key === 'Escape') closeDetail();
+  else if (e.ctrlKey || e.metaKey || e.altKey) return;
+  else if (e.key === '+' || e.key === '=') detailZoomAt(2);
+  else if (e.key === '-' || e.key === '_') detailZoomAt(0.5);
+  else if (e.key === '0') detailWhole();
+}
+
+detailView.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  hideDamageTip();
+  const delta = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+  detailZoomAt(Math.exp(-delta * (e.ctrlKey ? 0.01 : 0.0025)), e.clientY - detailView.getBoundingClientRect().top);
+}, { passive: false });
+
+// Drag (mouse or one finger) moves along the homolog and sideways when the pieces are wider than the window; two fingers pinch to zoom.
+const dPointers = new Map();
+let dPinch = null;
+detailView.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  detailView.setPointerCapture(e.pointerId);
+  dPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  dDrag = { x: e.clientX, y: e.clientY, moved: false };
+  detailView.classList.add('dragging');
+});
+detailView.addEventListener('pointermove', (e) => {
+  const previous = dPointers.get(e.pointerId);
+  if (!previous) { if (e.pointerType === 'mouse') showDetailTip(e.clientX, e.clientY); return; }   // Hovering (not dragging) shows a tooltip.
+  hideDamageTip();
+  dPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (dDrag && Math.abs(e.clientX - dDrag.x) + Math.abs(e.clientY - dDrag.y) > 4) dDrag.moved = true;
+  if (dPointers.size === 2) {
+    const [a, b] = [...dPointers.values()], distance = Math.hypot(a.x - b.x, a.y - b.y);
+    if (dPinch) detailZoomAt(distance / dPinch, (a.y + b.y) / 2 - detailView.getBoundingClientRect().top);
+    dPinch = distance || 1;
+    return;
+  }
+  detailView.scrollLeft -= e.clientX - previous.x;
+  dTop -= (e.clientY - previous.y) * dMbpPerPx;
+  detailRender();
+});
+const endDetailDrag = (e) => {
+  if (dDrag && !dDrag.moved && dPointers.size === 1) {               // A click on an indel pointer zooms to it.
+    const marker = document.elementFromPoint(e.clientX, e.clientY)?.closest('.marker');
+    if (marker) detailJumpTo(Number(marker.dataset.mbp));
+    else showDetailTip(e.clientX, e.clientY);                        // A tap shows the tooltip, for touch screens.
+  }
+  dPointers.delete(e.pointerId);
+  dPinch = null;
+  if (!dPointers.size) { dDrag = null; detailView.classList.remove('dragging'); }
+};
+detailView.addEventListener('pointerup', endDetailDrag);
+detailView.addEventListener('pointercancel', endDetailDrag);
+detailView.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') hideDamageTip(); });
+detailView.addEventListener('dblclick', (e) => detailZoomAt(2, e.clientY - detailView.getBoundingClientRect().top));
+detail.addEventListener('pointerdown', (e) => { if (e.target === detail) closeDetail(); });   // Clicking outside the panel closes it.
+document.getElementById('detailIn').onclick = () => detailZoomAt(2);
+document.getElementById('detailOut').onclick = () => detailZoomAt(0.5);
+document.getElementById('detailWhole').onclick = detailWhole;
+document.getElementById('detailClose').onclick = closeDetail;
+window.addEventListener('resize', () => { if (dSlot) detailRender(); });
 
 // ------------------------------------------------------------
 // Downloads

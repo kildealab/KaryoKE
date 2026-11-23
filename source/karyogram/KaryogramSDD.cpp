@@ -25,6 +25,11 @@ struct ChromosomeGeometry
     double x;								// X pixel position
     double y;								// Y pixel position
     double height;							// Chromosome height in pixels
+    RGB color;								// Fill colour, for the zoomed homolog view
+    double centromereStart;						// Centromere as fractions of the chromosome length
+    double centromereEnd;
+    bool secondHomolog;							// Drawn with a dashed outline
+    std::string title;							// Name of its homolog in the zoomed view, e.g. "Chromosome 5, homolog 2"
 };
 
 
@@ -153,6 +158,8 @@ bool Karyogram::renderSDDkaryogram(                                           //
 {
 
     labelRegions.clear();                                                  // Filled again below by drawChromosomeLabel, one region per chromosome label.
+    detailSlots.clear();                                                   // Filled again below, once every chromatid is drawn.
+    currentDetailSlot = -1;
 
     if (chromosomeSizes.empty())                                           // Make sure SDD header 'Chromosome sizes' Is non-empty.
     {
@@ -342,7 +349,7 @@ bool Karyogram::renderSDDkaryogram(                                           //
 
                 // Draw single-chromatid chromosome and store the ID, chromatid number, position and size in chromosomeGeometry.
                 drawChromosome(cr, posX, posY, chromosomeHeight, chromosomeWidth, chromosomeColor, centromereStart, centromereEnd);
-                chromosomeGeometry.push_back({static_cast<int>(firstIndex), 1, posX, posY, chromosomeHeight});
+                chromosomeGeometry.push_back({static_cast<int>(firstIndex), 1, posX, posY, chromosomeHeight, chromosomeColor, centromereStart, centromereEnd, false, "Chromosome " + std::to_string(i + 1)});
 
             }
 
@@ -359,8 +366,8 @@ bool Karyogram::renderSDDkaryogram(                                           //
                 drawReplicatedChromosome(cr, posX, posY, chromosomeHeight, chromosomeWidth, chromatidGap, chromosomeColor, centromereStart, centromereEnd);
 
                 // Both chromatids in the non-homologous case are assigned the same chromosome ID, it is just in the post-replicated cell phase, so there are two.
-                chromosomeGeometry.push_back({static_cast<int>(firstIndex), 1, posX, posY, chromosomeHeight});
-                chromosomeGeometry.push_back({static_cast<int>(firstIndex), 2, posX2, posY, chromosomeHeight});
+                chromosomeGeometry.push_back({static_cast<int>(firstIndex), 1, posX, posY, chromosomeHeight, chromosomeColor, centromereStart, centromereEnd, false, "Chromosome " + std::to_string(i + 1)});
+                chromosomeGeometry.push_back({static_cast<int>(firstIndex), 2, posX2, posY, chromosomeHeight, chromosomeColor, centromereStart, centromereEnd, false, "Chromosome " + std::to_string(i + 1)});
             }
 
             // ------------------------------------------------
@@ -461,8 +468,8 @@ bool Karyogram::renderSDDkaryogram(                                           //
                 drawChromosome(cr, rightChromPosX, posY, secondHeight, chromosomeWidth, chromosomeColor, secondCentromereStart, secondCentromereEnd, true);
 
                 // Store actual SDD chromosome IDs and their corresponding dimensions and locations --> for damage marker drawings later on.
-                chromosomeGeometry.push_back({static_cast<int>(firstIndex), 1, leftChromPosX, posY, firstHeight});
-                chromosomeGeometry.push_back({static_cast<int>(secondIndex), 1, rightChromPosX, posY, secondHeight});
+                chromosomeGeometry.push_back({static_cast<int>(firstIndex), 1, leftChromPosX, posY, firstHeight, chromosomeColor, firstCentromereStart, firstCentromereEnd, false, "Chromosome " + std::to_string(i + 1) + ", homolog 1"});
+                chromosomeGeometry.push_back({static_cast<int>(secondIndex), 1, rightChromPosX, posY, secondHeight, chromosomeColor, secondCentromereStart, secondCentromereEnd, true, "Chromosome " + std::to_string(i + 1) + ", homolog 2"});
             }
 
 
@@ -491,10 +498,10 @@ bool Karyogram::renderSDDkaryogram(                                           //
                 drawReplicatedChromosome(cr, rightChromatid1PosX, posY, secondHeight, chromosomeWidth, chromatidGap, chromosomeColor, secondCentromereStart, secondCentromereEnd, true);
 
                 // Store actual SDD chromosome IDs with their corresponding dimensions and locations --> for damage marker drawings later on
-                chromosomeGeometry.push_back({static_cast<int>(firstIndex), 1, leftChromatid1PosX, posY, firstHeight});
-                chromosomeGeometry.push_back({static_cast<int>(firstIndex), 2, leftChromatid2PosX, posY, firstHeight});
-                chromosomeGeometry.push_back({static_cast<int>(secondIndex), 1, rightChromatid1PosX, posY, secondHeight});
-                chromosomeGeometry.push_back({static_cast<int>(secondIndex), 2, rightChromatid2PosX, posY, secondHeight});
+                chromosomeGeometry.push_back({static_cast<int>(firstIndex), 1, leftChromatid1PosX, posY, firstHeight, chromosomeColor, firstCentromereStart, firstCentromereEnd, false, "Chromosome " + std::to_string(i + 1) + ", homolog 1"});
+                chromosomeGeometry.push_back({static_cast<int>(firstIndex), 2, leftChromatid2PosX, posY, firstHeight, chromosomeColor, firstCentromereStart, firstCentromereEnd, false, "Chromosome " + std::to_string(i + 1) + ", homolog 1"});
+                chromosomeGeometry.push_back({static_cast<int>(secondIndex), 1, rightChromatid1PosX, posY, secondHeight, chromosomeColor, secondCentromereStart, secondCentromereEnd, true, "Chromosome " + std::to_string(i + 1) + ", homolog 2"});
+                chromosomeGeometry.push_back({static_cast<int>(secondIndex), 2, rightChromatid2PosX, posY, secondHeight, chromosomeColor, secondCentromereStart, secondCentromereEnd, true, "Chromosome " + std::to_string(i + 1) + ", homolog 2"});
             }
 
 
@@ -606,12 +613,12 @@ bool Karyogram::renderSDDkaryogram(                                           //
         // Draw X
         drawChromosome(cr, xChromPosX, sexChromPosY, xHeight, chromosomeWidth, xColor, xCentromereStart, xCentromereEnd);
         // Store geometry of X chromosome for damage drawing
-        chromosomeGeometry.push_back({chromosomeCount, 1, xChromPosX, sexChromPosY, xHeight});
+        chromosomeGeometry.push_back({chromosomeCount, 1, xChromPosX, sexChromPosY, xHeight, xColor, xCentromereStart, xCentromereEnd, false, "Chromosome X"});
 
         // Draw Y
         drawChromosome(cr, yChromPosX, sexChromPosY, yHeight, chromosomeWidth, yColor, yCentromereStart, yCentromereEnd);
         // Store geometry of Y chromosome for damage drawing
-        chromosomeGeometry.push_back({chromosomeCount - 1, 1, yChromPosX, sexChromPosY, yHeight});
+        chromosomeGeometry.push_back({chromosomeCount - 1, 1, yChromPosX, sexChromPosY, yHeight, yColor, yCentromereStart, yCentromereEnd, false, "Chromosome Y"});
 
     }
     else
@@ -625,15 +632,15 @@ bool Karyogram::renderSDDkaryogram(                                           //
         // Draw X chromatids 1 and 2
         drawReplicatedChromosome(cr, xChromatid1PosX, sexChromPosY, xHeight, chromosomeWidth, chromatidGap, xColor, xCentromereStart, xCentromereEnd);
         // Store X chromatids 1 and 2 geometries for damage drawing
-        chromosomeGeometry.push_back({chromosomeCount, 1, xChromatid1PosX, sexChromPosY, xHeight});
-        chromosomeGeometry.push_back({chromosomeCount, 2, xChromatid2PosX, sexChromPosY, xHeight});
+        chromosomeGeometry.push_back({chromosomeCount, 1, xChromatid1PosX, sexChromPosY, xHeight, xColor, xCentromereStart, xCentromereEnd, false, "Chromosome X"});
+        chromosomeGeometry.push_back({chromosomeCount, 2, xChromatid2PosX, sexChromPosY, xHeight, xColor, xCentromereStart, xCentromereEnd, false, "Chromosome X"});
 
         // Draw Y chromatids 1 and 2
         drawReplicatedChromosome(cr, yChromatid1PosX, sexChromPosY, yHeight, chromosomeWidth, chromatidGap, yColor, yCentromereStart, yCentromereEnd);
 
         // Store Y chromatids 1 and 2 geometries for damage drawing
-        chromosomeGeometry.push_back({chromosomeCount - 1, 1, yChromatid1PosX, sexChromPosY, yHeight});
-        chromosomeGeometry.push_back({chromosomeCount - 1, 2, yChromatid2PosX, sexChromPosY, yHeight});
+        chromosomeGeometry.push_back({chromosomeCount - 1, 1, yChromatid1PosX, sexChromPosY, yHeight, yColor, yCentromereStart, yCentromereEnd, false, "Chromosome Y"});
+        chromosomeGeometry.push_back({chromosomeCount - 1, 2, yChromatid2PosX, sexChromPosY, yHeight, yColor, yCentromereStart, yCentromereEnd, false, "Chromosome Y"});
 
     }
 
@@ -733,6 +740,75 @@ bool Karyogram::renderSDDkaryogram(                                           //
     }
 
 
+
+    // --------------------------------------------------
+    // Zoomed homolog view: one slot per homolog, one piece per chromatid, with its SSB and DSB sites at their true positions
+    // --------------------------------------------------
+    for (const ChromosomeGeometry& geometry : chromosomeGeometry)
+    {
+        const size_t sizeIndex = static_cast<size_t>(geometry.chromosomeNumber);
+
+        if (sizeIndex == 0 || sizeIndex >= chromosomeSizes.size() || chromosomeSizes[sizeIndex] <= 0.0)
+        {
+            continue;
+        }
+
+        const double sizeMbp = chromosomeSizes[sizeIndex];
+        KaryogramDetailPiece piece;
+        piece.x = geometry.x;
+        piece.y = geometry.y;
+        piece.width = chromosomeWidth;
+        piece.height = geometry.height;
+        piece.caption = doubleChromatid ? "Chromatid " + std::to_string(geometry.chromatidNumber) : "";
+        piece.lengthMbp = sizeMbp;
+
+        KaryogramDetailSegment segment;
+        segment.startMbp = 0.0;
+        segment.endMbp = sizeMbp;
+        segment.r = geometry.color.r;
+        segment.g = geometry.color.g;
+        segment.b = geometry.color.b;
+        segment.secondHomolog = geometry.secondHomolog;
+
+        if (geometry.centromereEnd > geometry.centromereStart)
+        {
+            segment.centromereStartMbp = geometry.centromereStart * sizeMbp;
+            segment.centromereEndMbp = geometry.centromereEnd * sizeMbp;
+        }
+
+        piece.segments.push_back(segment);
+
+        // Sites with a DSB or SSBs on this chromatid; sites with base damage only are left out, as on the karyogram.
+        for (const Exposure& exposure : exposures)
+        {
+            for (const auto& damage : exposure.damages)
+            {
+                if (damage.chromosomeID.chromosomeNumber != geometry.chromosomeNumber || damage.chromosomeID.chromatidNumber != geometry.chromatidNumber
+                    || (damage.damageType.presenceOfDoubleStrandBreaks != 1 && damage.damageType.numSingleBackboneBreaks <= 0))
+                {
+                    continue;
+                }
+
+                DamageLocation location;
+                location.chromosomeID = damage.chromosomeID;
+                location.chromosomePosition = damage.chromosomePosition;
+
+                KaryogramDetailDamage site;
+                site.positionMbp = std::clamp(getDamageFraction(location, sizeMbp), 0.0, 1.0) * sizeMbp;
+                site.doubleStrandBreak = damage.damageType.presenceOfDoubleStrandBreaks == 1;
+                site.singleStrandBreaks = std::max(0, damage.damageType.numSingleBackboneBreaks);
+                piece.damages.push_back(site);
+            }
+        }
+
+        // Chromatids of one homolog share a slot: they are listed one after the other in chromosomeGeometry.
+        if (detailSlots.empty() || detailSlots.back().title != geometry.title)
+        {
+            detailSlots.push_back({ geometry.title, {} });
+        }
+
+        detailSlots.back().pieces.push_back(std::move(piece));
+    }
 
     if (unplacedDamageSites > 0)                                           // Never drop damages silently: the summary box still counts them.
     {

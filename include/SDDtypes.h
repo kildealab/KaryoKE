@@ -9,7 +9,7 @@
 namespace karyoke
 {
 
-// Use for checking if any optional header fields are absent, to not raise an error, but report as not measured.
+// Use for checking if any optional header fields are absent, not to raise an error, but report as not measured.
 constexpr int SDD_INT_FIELD_NOT_MEASURED = -1;
 constexpr double SDD_DOUBLE_FIELD_NOT_MEASURED = -1.0;
 
@@ -109,7 +109,7 @@ struct DamageCause
 //--------------------------------------------------
 struct DamageType			// Specifies the type of damage present at a given site. Damages separated by less than the minimum distance of base pairs specified in header field 22 are scored in a single data block.
 {
-    int numBaseDamages = 0;		
+    int numBaseDamages = 0;
     int numSingleBackboneBreaks = 0;
     int presenceOfDoubleStrandBreaks = 0; // Binary flag 0 for no, 1 for yes.
 };
@@ -127,7 +127,7 @@ struct FullBreakSpec
 };
 
 
-// Exposure entry structure, need to include optional fields 8-14 later.
+// Exposure entry structure, include optional fields 8-14 later.
 struct DamageEntry
 {
     Classification classification;
@@ -163,7 +163,7 @@ struct ChromosomeDamageSummary // Important damage information to be summarized 
 };
 
 //-------------------------------------------------
-// Plotting double-strand/ single-strand break locations 
+// Plotting double-strand / single-strand break locations
 //-------------------------------------------------
 struct DamageLocation		// Stores the chromosome position in base pairs where the damage occurs, converted to x and y coordinates for karyogram.
 {

@@ -115,13 +115,9 @@ inline std::string sourceTypeMeaning(int sourceType)
 
 
 
-// Converting only certain common incident particle codes, otherwise
-// See Particle Data Group website for particle codes. 
-// Most common are: electrons(11), positrons(-11), photons (22), 
-// protons (2212), neutrons (2112) and alpha particles (1000020040).
-// Function to be called in a for loop through each incident particle listed 
-// in the header to be summarized with the particles associated particle fluence
-// fraction.
+// Converting only certain common incident particle codes, otherwise see Particle Data Group website for particle codes.
+// Most common are: electrons(11), positrons(-11), photons (22), protons (2212), neutrons (2112) and alpha particles (1000020040).
+// Function to be called in a for loop through each incident particle listed in the header to be summarized with the particles associated particle fluence fraction.
 inline std::string incidentParticlesMeaning(int incidentParticle)
 {
 
@@ -224,8 +220,7 @@ inline std::string doseOrFluenceMeaning(const std::vector<double>& doseOrFluence
 inline std::string volumesMeaning(const std::vector<double>& volumesVec)
 {
     std::string result = "";
-// Volumes field can have either 7 or 14 data entries, 7 if the cell and nucleus
-// have the same dimensions, 14 to specify the cell dimensions (1-7) and
+// Volumes field can have either 7 or 14 data entries, 7 if the cell and nucleus have the same dimensions, 14 to specify the cell dimensions (1-7) and
 // the nucleus dimensions (8-14).
     if (volumesVec.size() == 7)  // cell and nucleus have same specifications
     {
@@ -597,7 +592,7 @@ inline std::string timeMeaning(double t)
 
 
 
-// Essential to interpret the SDD data entries, check the order of 0s and 1s, should have 14 header entries. 
+// Essential to interpret the SDD data entries, check the order of 0s and 1s, should have 14 header entries.
 inline std::string dataEntriesMeaning(const std::vector<int>& dataEntriesVec)
 {
     if (dataEntriesVec.empty())

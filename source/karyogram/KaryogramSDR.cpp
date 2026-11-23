@@ -70,17 +70,22 @@ static double mixedRecordLengthWithHomeGaps(const SDRdataRecord& record, int hom
 static bool hasPiecesMovedWithinStrand(const std::vector<SDRfragment>& fragments);
 
 // Did pieces of the home strand of a mixed record move within the chromosome (see hasPiecesMovedWithinStrand())? Foreign pieces are left out.
+// Only a record that carries the home strand's centromere (the body of the chromosome) qualifies: its home pieces are laid out against the whole
+// chromosome, with the stretches it lacks drawn as deleted. An acentric piece of the chromosome (e.g. the partner of a dicentric) holds only part of
+// it, and the rest usually sits in another record rather than being deleted, so it keeps the plain mixed layout.
 static bool homePiecesMoved(const SDRdataRecord& record, int homeOldStrandID)
 {
     std::vector<SDRfragment> home;
+    bool homeCentromere = false;
     for (const SDRfragment& fragment : record.fragments)
     {
         if (fragment.oldStrandID == homeOldStrandID)
         {
             home.push_back(fragment);
+            homeCentromere = homeCentromere || fragment.hasCentromere;
         }
     }
-    return home.size() != record.fragments.size() && home.size() >= 2 && hasPiecesMovedWithinStrand(home);
+    return homeCentromere && home.size() != record.fragments.size() && home.size() >= 2 && hasPiecesMovedWithinStrand(home);
 }
 
 static bool isSingleMixedRecordWithHomeGap(const std::vector<const SDRdataRecord*>& records, int homeOldStrandID)
@@ -136,6 +141,12 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
 {
 
     labelRegions.clear();						// Label positions are recorded fresh for every karyogram
+    detailSlots.clear();						// So are the homolog slots of the zoomed view
+    detailStrandNames.clear();
+    currentDetailSlot = -1;
+    detailIndels.clear();
+    detailMasterHeader = &masterHeader;
+    detailHumanGenome = humanGenome;
 
     // Check for absent data in SDR headers/subHeaders
     if (rawSubHeader.dataRecords.empty())
@@ -154,7 +165,8 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
 
     // Indels (< 100 bp) are only counted, never drawn: the chromosomes are drawn from the cell with its indels taken out (see removeIndels), so an
     // inserted base or a 5 bp gap neither adds a sliver of another chromosome's colour nor splits a piece. The summary box still counts them.
-    const SDRsubHeader subHeader = removeIndels(rawSubHeader, static_cast<int>(sizes[0]));
+    // The indels taken out are kept, to be marked in the zoomed homolog view.
+    const SDRsubHeader subHeader = removeIndels(rawSubHeader, static_cast<int>(sizes[0]), &detailIndels);
 
 
     // All data records grouped by their determined home strand (the centromere-bearing fragment when unambiguous, 
@@ -401,6 +413,7 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
     const int columns = 4;
     const double colWidth = static_cast<double>(imgWidth) / columns;
     const double maxRenderHeight = 180.0;					// Height of the largest intact chromosome, safe to tune.
+    detailMbpPerPixel = maxLengthMbp / maxRenderHeight;
     const double rowHeight = 250.0;						// Default row height; a row holding a longer derivative grows (see rowTop below).
     const double rowSpacing = rowHeight - maxRenderHeight;			// Room under the tallest bar of a row for its label and the gap to the next row.
     const double startY = 288.0;						// Below the summary box (5 rows of counts, bottom at y = 218).
@@ -546,6 +559,30 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
 
 
 
+    // Name of every original strand, as its slot is titled, so the zoomed view can say which homolog a translocated segment came from
+    // (slots are drawn one after another, so the names are all set before any slot is drawn).
+    for (int i = 0; i < drawableGroups; ++i)
+    {
+        const std::string chromosome = "Chromosome " + std::to_string(i + 1);
+
+        if (chromosomeLayout == ChromosomeLayout::SPLIT_HOMOLOGS)
+        {
+            detailStrandNames[i + 1] = chromosome + ", homolog 1";
+            detailStrandNames[i + 1 + homologousPairs] = chromosome + ", homolog 2";
+        }
+        else if (chromosomeLayout == ChromosomeLayout::ADJACENT_HOMOLOGS)
+        {
+            detailStrandNames[2 * i + 1] = chromosome + ", homolog 1";
+            detailStrandNames[2 * i + 2] = chromosome + ", homolog 2";
+        }
+        else
+        {
+            detailStrandNames[i + 1] = chromosome;
+        }
+    }
+    detailStrandNames[chromosomeCount - 1] = "Chromosome Y";			// Y and X are always the last two strands, in that order
+    detailStrandNames[chromosomeCount] = "Chromosome X";
+
     // ----------------------------------------------------------------------------------------------------
     // Draw each numbered chromosome slot depending on chromosome sizes layout, X and Y will be drawn later
     // ----------------------------------------------------------------------------------------------------
@@ -624,12 +661,16 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
 	    // And draw other mutations stacked on top of the original intact chromosome
             if (!leftRecords.empty())
             {
+                beginDetailSlot("Chromosome " + std::to_string(i + 1) + ", homolog 1", firstOldStrandID);
                 drawStackedMutations(cr, leftRecords, leftSlotCenterX, posY, chromosomeWidth, maxLengthMbp, maxRenderHeight, humanGenome, masterHeader, firstOldStrandID);
+                endDetailSlot();
             }
 
             if (!rightRecords.empty())
             {
+                beginDetailSlot("Chromosome " + std::to_string(i + 1) + ", homolog 2", secondOldStrandID);
                 drawStackedMutations(cr, rightRecords, rightSlotCenterX, posY, chromosomeWidth, maxLengthMbp, maxRenderHeight, humanGenome, masterHeader, secondOldStrandID);
+                endDetailSlot();
             }
 
 	    // Add a label
@@ -652,7 +693,9 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
 
             if (!filtered.empty())						// If data present, draw the mutation and label it
             {
+                beginDetailSlot("Chromosome " + std::to_string(i + 1), firstOldStrandID);
                 drawStackedMutations(cr, filtered, groupCenterX, posY, chromosomeWidth, maxLengthMbp, maxRenderHeight, humanGenome, masterHeader, firstOldStrandID);
+                endDetailSlot();
                 labelHeight = computeMaxBarHeight(filtered, maxLengthMbp, maxRenderHeight, firstOldStrandID, masterHeader);
             }
         }
@@ -712,7 +755,9 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
         double yLabelHeight = maxRenderHeight;
         if (!yRecords.empty())
         {
+            beginDetailSlot("Chromosome Y", yOldStrandID);
             drawStackedMutations(cr, yRecords, yCenterPosX, sexChromPosY, chromosomeWidth, maxLengthMbp, maxRenderHeight, humanGenome, masterHeader, yOldStrandID);
+            endDetailSlot();
             yLabelHeight = computeMaxBarHeight(yRecords, maxLengthMbp, maxRenderHeight, yOldStrandID, masterHeader);
         }
 
@@ -727,7 +772,9 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
 
         if (!xRecords.empty())
         {
+            beginDetailSlot("Chromosome X", xOldStrandID);
             drawStackedMutations(cr, xRecords, xCenterPosX, sexChromPosY, chromosomeWidth, maxLengthMbp, maxRenderHeight, humanGenome, masterHeader, xOldStrandID);
+            endDetailSlot();
             xLabelHeight = computeMaxBarHeight(xRecords, maxLengthMbp, maxRenderHeight, xOldStrandID, masterHeader);
         }
 
@@ -789,7 +836,9 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
 
         // homeOldStrandID is only used by drawStackedMutations()/computeMaxBarHeight() to test for named single-strand shapes (deletion, ecDNA, etc.). 
 	// This record mixes two different strands' fragments, so none of those shapes can match regardless of which ID is passed.
+        const int chromoplexyDetailSlot = beginDetailSlot("", combinedRecord.fragments.front().oldStrandID);	// Titled below, once the label is known
         drawStackedMutations(cr, combinedRecords, slotCenterX, slotPosY, chromosomeWidth, maxLengthMbp, maxRenderHeight, humanGenome, masterHeader, combinedRecord.fragments.front().oldStrandID);
+        endDetailSlot();
         const double slotLabelHeight = computeMaxBarHeight(combinedRecords, maxLengthMbp, maxRenderHeight, combinedRecord.fragments.front().oldStrandID, masterHeader);
 
         //  Label acentric strand with the fragments that appear on the drawn strand, trailing "*" marking it as acentric.
@@ -803,6 +852,11 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
     	    chromoplexyLabel += "chr" + std::to_string(combinedRecord.fragments[f].oldStrandID);
 	}
 	chromoplexyLabel += "*";
+
+	if (chromoplexyDetailSlot >= 0 && chromoplexyDetailSlot < static_cast<int>(detailSlots.size()))
+	{
+	    detailSlots[chromoplexyDetailSlot].title = "Acentric piece " + chromoplexyLabel;
+	}
 
 	cairo_set_source_rgb(cr, 0.1, 0.1, 0.1);
 	cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
@@ -889,6 +943,9 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
         }
 
         drawPieChartFragment(cr, slotCenterX, centerY, diameter, wedges);
+        const int ecDNAdetailSlot = beginDetailSlot("", -1);			// Titled below, once the label is known
+        recordDetailCircle(*circularRecord, slotCenterX, centerY, diameter);
+        endDetailSlot();
 
 
         // Label reads e.g. "chrA-chrB*", one "chr<oldStrandID>" token per DISTINCT contributing strand, in the order each strand first appears on the 
@@ -914,6 +971,11 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
         }
 
         ecDNAlabel += "*";
+
+        if (ecDNAdetailSlot >= 0 && ecDNAdetailSlot < static_cast<int>(detailSlots.size()))
+        {
+            detailSlots[ecDNAdetailSlot].title = "ecDNA " + ecDNAlabel;
+        }
 
         cairo_set_source_rgb(cr, 0.1, 0.1, 0.1);
         cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
@@ -1224,6 +1286,8 @@ void Karyogram::drawPaintedFragment(			// Function to draw the individual fragme
         cairo_fill(cr);
     }
 
+    std::vector<std::pair<double, double>> chevronsPx;					// Top and bottom of each chevron, for the zoomed view
+
     // Inversion chevrons, drawn in their own pass after every fill (and white-gap padding) so no neighbouring segment can paint over them. Each chevron is black and spans the
     // full height of its inverted segment and the full width of the chromosome, so a short inversion gives a flatter and flatter arrow, ending as a single horizontal line.
     // Still inside the capsule clip, so the arm ends are trimmed to the chromosome outline.
@@ -1246,6 +1310,7 @@ void Karyogram::drawPaintedFragment(			// Function to draw the individual fragme
         }
 
         drawInversionChevron(cr, x + width / 2.0, y + height * segment.startFraction, y + height * endFraction, width);
+        chevronsPx.emplace_back(y + height * segment.startFraction, y + height * endFraction);
     }
 
     cairo_restore(cr);
@@ -1815,6 +1880,11 @@ void Karyogram::drawPaintedFragment(			// Function to draw the individual fragme
         const double bulge = std::max(11.0, 0.6 * std::fabs(toY - fromY)) + 6.0 * static_cast<double>(i);	// Further arrows reach a little further out
 
         drawMovedSegmentArrow(cr, x, fromY, toY, bulge, 1.3, 5.5, 3.6);
+    }
+
+    if (currentDetailSlot >= 0)
+    {
+        recordDetailBar(x, y, height, width, inputSegments, segments, chevronsPx, movedArrows, dashedBoundary, hiddenBoundary, roundTopCap, roundBottomCap, drawOutline);
     }
 }
 
@@ -3409,6 +3479,11 @@ void Karyogram::drawSingleOriginCircularPiece(
 {
     const RGB color = getColorForOriginalStrand(homeOldStrandID, masterHeader);
 
+    if (currentDetailSlot >= 0)
+    {
+        recordDetailCircle(record, centerX, centerY, diameter);
+    }
+
     double ringLengthMbp = 0.0;
     const SDRfragment* centromereFragment = nullptr;
     double centromereFragmentOffsetMbp = 0.0;					// Where the centromere-bearing fragment starts along the ring
@@ -4167,5 +4242,368 @@ std::vector<const SDRdataRecord*> Karyogram::clusterRecordsForDrawing(
 
 
 
+// --------------------------------------------------------------------------------------------------------------------------------------------
+// Zoomed homolog view: every piece drawn in a homolog's slot, recorded at its true size for the web viewer (see getDetailSlots()).
+// --------------------------------------------------------------------------------------------------------------------------------------------
+
+namespace
+{
+    // A recorded segment plus where its bases came from, used to place the cell's indels on it.
+    struct DetailSegmentOrigin
+    {
+        int strandID;					// Original strand, -1 for white gaps or when not known
+        double lowMbp;					// Original positions covered by the segment
+        double highMbp;
+    };
+
+    // Adds a marker to the piece for every indel whose site lies on one of its segments, at the site's position along the piece.
+    // Indels are taken out before drawing (see removeIndels()), so without a marker they could not be found in the zoomed view.
+    void addIndelMarkers(KaryogramDetailPiece& piece, const std::vector<DetailSegmentOrigin>& origins, const std::vector<SDRindelEvent>& indels)
+    {
+        const double siteTolerance = 0.0000005;		// Half a base: the site is the end of the piece left of it
+
+        for (const SDRindelEvent& indel : indels)
+        {
+            for (std::size_t k = 0; k < piece.segments.size() && k < origins.size(); ++k)
+            {
+                const KaryogramDetailSegment& segment = piece.segments[k];
+                const DetailSegmentOrigin& origin = origins[k];
+
+                if (segment.gap || origin.strandID != indel.oldStrandID
+                    || indel.position < origin.lowMbp - siteTolerance || indel.position > origin.highMbp + siteTolerance)
+                {
+                    continue;
+                }
+
+                const double offsetMbp = segment.reversed ? origin.highMbp - indel.position : indel.position - origin.lowMbp;
+                const double positionMbp = std::min(segment.endMbp, std::max(segment.startMbp, segment.startMbp + offsetMbp));
+
+                std::string text = "Indel: ";
+                if (indel.deletedBases > 0)
+                {
+                    text += std::to_string(indel.deletedBases) + " bp deleted";
+                }
+                if (indel.insertedBases > 0)
+                {
+                    text += std::string(indel.deletedBases > 0 ? ", " : "") + std::to_string(indel.insertedBases) + " bp inserted";
+                }
+
+                KaryogramDetailMarker marker;
+                marker.positionMbp = positionMbp;
+                marker.text = text;
+                marker.deletedMbp = indel.deletedBases / 1000000.0;	// The joined piece still spans the deleted bases, right below the site
+                marker.inserted = indel.insertedBases > 0;
+                piece.markers.push_back(marker);
+                break;							// One marker per indel, even where two segments touch at its site
+            }
+        }
+    }
+
+    bool isWhiteSegment(const RGB& color)
+    {
+        return std::fabs(color.r - 1.0) < 1e-6 && std::fabs(color.g - 1.0) < 1e-6 && std::fabs(color.b - 1.0) < 1e-6;
+    }
+}
+
+
+// Opens a slot for the zoomed view: pieces drawn from now on until endDetailSlot() belong to it. Alters detailSlots and the current slot state.
+int Karyogram::beginDetailSlot(const std::string& title, int homeOldStrandID)
+{
+    KaryogramDetailSlot slot;
+    slot.title = title;
+    detailSlots.push_back(slot);
+
+    currentDetailSlot = static_cast<int>(detailSlots.size()) - 1;
+    detailHomeStrandID = homeOldStrandID;
+    return currentDetailSlot;
+}
+
+
+// Closes the current slot; a slot that recorded no piece is removed again so it never shows up as an empty zoomed view.
+void Karyogram::endDetailSlot()
+{
+    if (currentDetailSlot >= 0 && currentDetailSlot == static_cast<int>(detailSlots.size()) - 1 && detailSlots.back().pieces.empty())
+    {
+        detailSlots.pop_back();
+    }
+
+    currentDetailSlot = -1;
+    detailHomeStrandID = -1;
+}
+
+
+// Records one bar drawn by drawPaintedFragment() in the current slot, at its true size. The drawing stretches tiny segments to a minimum height,
+// so the pixel positions of chevrons and arrows are mapped back through the drawn and true segment boundaries to Mbp along the piece.
+// Alters detailSlots (adds a piece to the current slot).
+void Karyogram::recordDetailBar(double x, double y, double height, double width,
+                                const std::vector<PaintedSegment>& trueSegments, const std::vector<PaintedSegment>& drawnSegments,
+                                const std::vector<std::pair<double, double>>& chevronsPx, const std::vector<std::pair<double, double>>& arrowsPx,
+                                const std::vector<bool>& dashedBoundary, const std::vector<bool>& hiddenBoundary,
+                                bool roundTopCap, bool roundBottomCap, bool drawOutline)
+{
+    if (currentDetailSlot < 0 || currentDetailSlot >= static_cast<int>(detailSlots.size()) || trueSegments.empty() || height <= 0.0)
+    {
+        return;
+    }
+
+    // Mbp per unit of fraction along the bar: from the segments that carry their original positions, otherwise (a deletion drawn on its
+    // own chromosome, where fractions are positions over the chromosome size) the home chromosome's size, otherwise the karyogram scale.
+    double knownMbp = 0.0;
+    double knownFraction = 0.0;
+
+    for (const PaintedSegment& segment : trueSegments)
+    {
+        if (segment.oldStrandID >= 0 && !isWhiteSegment(segment.color) && segment.endFraction > segment.startFraction)
+        {
+            knownMbp += std::fabs(segment.oldEndPosition - segment.oldStartPosition);
+            knownFraction += segment.endFraction - segment.startFraction;
+        }
+    }
+
+    double mbpPerFraction = height * detailMbpPerPixel;
+    bool fractionsArePositions = false;					// Fractions are home-chromosome positions over its size
+
+    if (knownFraction > 1e-12 && knownMbp > 0.0)
+    {
+        mbpPerFraction = knownMbp / knownFraction;
+    }
+    else if (detailMasterHeader != nullptr && detailHomeStrandID > 0
+             && static_cast<std::size_t>(detailHomeStrandID) < detailMasterHeader->intactChromosomeSizes.size()
+             && detailMasterHeader->intactChromosomeSizes[detailHomeStrandID] > 0.0)
+    {
+        mbpPerFraction = detailMasterHeader->intactChromosomeSizes[detailHomeStrandID];
+        fractionsArePositions = true;
+    }
+
+    // Drawn fraction -> true fraction, through the boundaries both versions share (the minimum-height stretch is piecewise linear).
+    std::vector<std::pair<double, double>> boundaryPairs;
+    for (std::size_t k = 0; k < trueSegments.size() && k < drawnSegments.size(); ++k)
+    {
+        boundaryPairs.emplace_back(drawnSegments[k].startFraction, trueSegments[k].startFraction);
+        boundaryPairs.emplace_back(drawnSegments[k].endFraction, trueSegments[k].endFraction);
+    }
+    std::sort(boundaryPairs.begin(), boundaryPairs.end());
+
+    const auto pixelToMbp = [&](double pixelY)
+    {
+        const double drawnFraction = (pixelY - y) / height;
+        double trueFraction = drawnFraction;
+
+        if (!boundaryPairs.empty())
+        {
+            if (drawnFraction <= boundaryPairs.front().first)
+            {
+                trueFraction = boundaryPairs.front().second;
+            }
+            else if (drawnFraction >= boundaryPairs.back().first)
+            {
+                trueFraction = boundaryPairs.back().second;
+            }
+            else
+            {
+                for (std::size_t i = 0; i + 1 < boundaryPairs.size(); ++i)
+                {
+                    const auto& [drawnLow, trueLow] = boundaryPairs[i];
+                    const auto& [drawnHigh, trueHigh] = boundaryPairs[i + 1];
+
+                    if (drawnFraction <= drawnHigh)
+                    {
+                        const double t = (drawnHigh > drawnLow) ? (drawnFraction - drawnLow) / (drawnHigh - drawnLow) : 0.0;
+                        trueFraction = trueLow + t * (trueHigh - trueLow);
+                        break;
+                    }
+                }
+            }
+        }
+
+        return trueFraction * mbpPerFraction;
+    };
+
+    KaryogramDetailPiece piece;
+    piece.x = x;
+    piece.y = y;
+    piece.width = width;
+    piece.height = height;
+    piece.caption = drawOutline ? "" : "Excised piece";
+    piece.lengthMbp = mbpPerFraction;
+    piece.roundTopCap = roundTopCap;
+    piece.roundBottomCap = roundBottomCap;
+    piece.outline = drawOutline;
+
+    std::vector<DetailSegmentOrigin> origins;
+
+    for (const PaintedSegment& segment : trueSegments)
+    {
+        KaryogramDetailSegment detail;
+        detail.startMbp = segment.startFraction * mbpPerFraction;
+        detail.endMbp = segment.endFraction * mbpPerFraction;
+        detail.r = segment.color.r;
+        detail.g = segment.color.g;
+        detail.b = segment.color.b;
+        detail.gap = isWhiteSegment(segment.color);
+        detail.reversed = segment.isReversed;
+        detail.secondHomolog = segment.isSecondHomolog;
+
+        if (segment.hasCentromere)
+        {
+            detail.centromereStartMbp = segment.centromereStartFraction * mbpPerFraction;
+            detail.centromereEndMbp = segment.centromereEndFraction * mbpPerFraction;
+        }
+
+        piece.segments.push_back(detail);
+
+        DetailSegmentOrigin origin{ -1, 0.0, 0.0 };
+        if (!detail.gap && segment.oldStrandID >= 0)
+        {
+            origin = { segment.oldStrandID, std::min(segment.oldStartPosition, segment.oldEndPosition), std::max(segment.oldStartPosition, segment.oldEndPosition) };
+        }
+        else if (!detail.gap && fractionsArePositions)
+        {
+            origin = { detailHomeStrandID, detail.startMbp, detail.endMbp };
+        }
+        origins.push_back(origin);
+    }
+
+    // Original span of every segment, shown when hovering over it in the zoomed view. A white gap's deleted span lies between the ends of the
+    // pieces of the same chromosome that border it; on a deletion drawn on its own chromosome the gap's position is already that span.
+    for (std::size_t k = 0; k < piece.segments.size(); ++k)
+    {
+        KaryogramDetailSegment& detail = piece.segments[k];
+
+        if (!detail.gap)
+        {
+            if (origins[k].strandID >= 0)
+            {
+                detail.originStartMbp = origins[k].lowMbp;
+                detail.originEndMbp = origins[k].highMbp;
+                detail.foreign = detailHomeStrandID > 0 && origins[k].strandID != detailHomeStrandID;
+
+                const auto name = detailStrandNames.find(origins[k].strandID);
+                if (name != detailStrandNames.end())
+                {
+                    detail.originName = name->second;
+                }
+            }
+            continue;
+        }
+
+        if (fractionsArePositions)
+        {
+            detail.originStartMbp = detail.startMbp;
+            detail.originEndMbp = detail.endMbp;
+            continue;
+        }
+
+        if (k == 0 || k + 1 >= piece.segments.size() || origins[k - 1].strandID < 0 || origins[k - 1].strandID != origins[k + 1].strandID)
+        {
+            continue;
+        }
+
+        const double aboveEdge = piece.segments[k - 1].reversed ? origins[k - 1].lowMbp : origins[k - 1].highMbp;
+        const double belowEdge = piece.segments[k + 1].reversed ? origins[k + 1].highMbp : origins[k + 1].lowMbp;
+        detail.originStartMbp = std::min(aboveEdge, belowEdge);
+        detail.originEndMbp = std::max(aboveEdge, belowEdge);
+    }
+
+    for (const auto& [topY, bottomY] : chevronsPx)
+    {
+        piece.chevrons.emplace_back(pixelToMbp(topY), pixelToMbp(bottomY));
+    }
+
+    for (const auto& [fromY, toY] : arrowsPx)
+    {
+        piece.movedArrows.emplace_back(pixelToMbp(fromY), pixelToMbp(toY));
+    }
+
+    for (std::size_t k = 0; k < dashedBoundary.size(); ++k)
+    {
+        if (dashedBoundary[k])
+        {
+            piece.dashedBoundaries.push_back(static_cast<int>(k));
+        }
+    }
+
+    for (std::size_t k = 0; k < hiddenBoundary.size(); ++k)
+    {
+        if (hiddenBoundary[k])
+        {
+            piece.hiddenBoundaries.push_back(static_cast<int>(k));
+        }
+    }
+
+    addIndelMarkers(piece, origins, detailIndels);
+    detailSlots[currentDetailSlot].pieces.push_back(std::move(piece));
+}
+
+
+// Records a circular piece (ecDNA or ring) in the current slot, clickable over the drawn circle: its segments are laid end to end from its
+// first fragment, which the zoomed view wraps clockwise around a circle.
+// Alters detailSlots (adds a piece to the current slot).
+void Karyogram::recordDetailCircle(const SDRdataRecord& record, double centerX, double centerY, double diameter)
+{
+    if (currentDetailSlot < 0 || currentDetailSlot >= static_cast<int>(detailSlots.size()) || detailMasterHeader == nullptr)
+    {
+        return;
+    }
+
+    const std::vector<PaintedSegment> segments = buildPaintedSegments(record, detailHumanGenome, *detailMasterHeader);
+    double lengthMbp = 0.0;
+    bool hasCentromere = false;
+
+    for (const SDRfragment& fragment : record.fragments)
+    {
+        lengthMbp += std::fabs(fragment.oldEndPosition - fragment.oldStartPosition);
+        hasCentromere = hasCentromere || fragment.hasCentromere;
+    }
+
+    if (segments.empty() || lengthMbp <= 0.0)
+    {
+        return;
+    }
+
+    KaryogramDetailPiece piece;
+    piece.x = centerX - diameter / 2.0;
+    piece.y = centerY - diameter / 2.0;
+    piece.width = diameter;
+    piece.height = diameter;
+    piece.caption = hasCentromere ? "Ring" : "ecDNA";
+    piece.lengthMbp = lengthMbp;
+    piece.circular = true;
+    piece.roundTopCap = false;							// A circle has no telomeres
+    piece.roundBottomCap = false;
+
+    std::vector<DetailSegmentOrigin> origins;
+
+    for (const PaintedSegment& segment : segments)
+    {
+        KaryogramDetailSegment detail;
+        detail.startMbp = segment.startFraction * lengthMbp;
+        detail.endMbp = segment.endFraction * lengthMbp;
+        detail.r = segment.color.r;
+        detail.g = segment.color.g;
+        detail.b = segment.color.b;
+        detail.reversed = segment.isReversed;
+        detail.secondHomolog = segment.isSecondHomolog;
+
+        if (segment.hasCentromere)
+        {
+            detail.centromereStartMbp = segment.centromereStartFraction * lengthMbp;
+            detail.centromereEndMbp = segment.centromereEndFraction * lengthMbp;
+        }
+
+        if (detail.reversed)
+        {
+            piece.chevrons.emplace_back(detail.startMbp, detail.endMbp);
+        }
+
+        detail.originStartMbp = std::min(segment.oldStartPosition, segment.oldEndPosition);
+        detail.originEndMbp = std::max(segment.oldStartPosition, segment.oldEndPosition);
+        piece.segments.push_back(detail);
+        origins.push_back({ segment.oldStrandID, detail.originStartMbp, detail.originEndMbp });
+    }
+
+    addIndelMarkers(piece, origins, detailIndels);
+    detailSlots[currentDetailSlot].pieces.push_back(std::move(piece));
+}
 
 } // namespace karyoke

@@ -6,9 +6,11 @@
 #include <string>
 #include <vector>
 #include <utility>
+#include <map>
 
 #include "SDDtypes.h"
 #include "SDRtypes.h"
+#include "KaryogramViewer.h"
 
 namespace karyoke
 {
@@ -126,10 +128,36 @@ public:
     // Used by the CLI to make the labels clickable in the web viewer.
     const std::vector<KaryogramLabelRegion>& getLabelRegions() const { return labelRegions; }
 
+    // Every homolog slot of the most recent generateSDRkaryogram() or generateSDDkaryogram() call, with each drawn piece (SDR) or chromatid with
+    // its SSB and DSB sites (SDD) at its true size.
+    // Used by the web viewer to open a zoomed view of a homolog when it is clicked.
+    const std::vector<KaryogramDetailSlot>& getDetailSlots() const { return detailSlots; }
+
 
 private:
 
     std::vector<KaryogramLabelRegion> labelRegions;	// Filled while drawing an SDR karyogram, see getLabelRegions().
+
+    // Zoomed homolog view (see getDetailSlots()). Pieces are recorded only while a slot is open, so off-screen measuring passes and the legend are left out.
+    std::vector<KaryogramDetailSlot> detailSlots;
+    int currentDetailSlot = -1;				// Index into detailSlots of the slot being drawn, -1 when nothing is recorded
+    int detailHomeStrandID = -1;				// Home strand of the slot being drawn
+    double detailMbpPerPixel = 0.0;				// Karyogram scale, for bars whose segments carry no positions
+    std::vector<SDRindelEvent> detailIndels;		// Indels of the cell being drawn: never drawn on the karyogram, marked in the zoomed view
+    const SDRmasterHeader* detailMasterHeader = nullptr;	// Header of the cell being drawn, for chromosome sizes
+    bool detailHumanGenome = true;
+    std::map<int, std::string> detailStrandNames;		// Original strand ID -> its homolog's name, e.g. "Chromosome 5, homolog 2"
+
+    // Starts recording a homolog slot's pieces under the given title; returns its index. endDetailSlot() stops recording and drops an empty slot.
+    int beginDetailSlot(const std::string& title, int homeOldStrandID);
+    void endDetailSlot();
+    // Records a bar drawn by drawPaintedFragment() at its true size: maps the drawn (minimum-height-adjusted) pixel positions of its chevrons and
+    // arrows back to Mbp along the piece and adds markers for the cell's indels that fall on it.
+    void recordDetailBar(double x, double y, double height, double width, const std::vector<PaintedSegment>& trueSegments, const std::vector<PaintedSegment>& drawnSegments,
+                         const std::vector<std::pair<double, double>>& chevronsPx, const std::vector<std::pair<double, double>>& arrowsPx,
+                         const std::vector<bool>& dashedBoundary, const std::vector<bool>& hiddenBoundary, bool roundTopCap, bool roundBottomCap, bool drawOutline);
+    // Records a circular piece (ecDNA or ring) clickable over the circle drawn at (centerX, centerY).
+    void recordDetailCircle(const SDRdataRecord& record, double centerX, double centerY, double diameter);
 
     // Draws a chromosome label at the current point and records its bounding box and original strands in labelRegions.
     void drawChromosomeLabel(cairo_t* cr, const std::string& label, double x, double y, const std::vector<int>& oldStrandIDs);
