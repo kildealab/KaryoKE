@@ -73,6 +73,7 @@ struct KaryogramDetailSlot                      // Everything drawn for one homo
 {
     std::string title;                          // E.g. "Chromosome 5, homolog 1".
     std::vector<KaryogramDetailPiece> pieces;
+    bool sisterChromatids = false;              // SDD: the two pieces are the sister chromatids of one replicated homolog, drawn joined.
 };
 
 struct KaryogramImage                           // One karyogram to show in the web viewer.

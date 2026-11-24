@@ -115,7 +115,8 @@ namespace
         return buffer;
     }
 
-    // Write the clickable homologs of one karyogram as a JavaScript array for the zoomed homolog view: per slot its title and pieces, each piece
+    // Write the clickable homologs of one karyogram as a JavaScript array for the zoomed homolog view: per slot its title, whether its pieces are
+    // sister chromatids (SDD replicated homolog) and its pieces, each piece
     // with its clickable area on the karyogram and its segments, chevrons, arrows, boundary styles and indel markers in Mbp along the piece.
     std::string detailSlotsJs(const std::vector<KaryogramDetailSlot>& slots)
     {
@@ -123,7 +124,7 @@ namespace
 
         for (const KaryogramDetailSlot& slot : slots)
         {
-            js += "\n      { title: " + jsString(slot.title) + ", pieces: [";
+            js += "\n      { title: " + jsString(slot.title) + (slot.sisterChromatids ? ", sisters: true" : "") + ", pieces: [";
 
             for (const KaryogramDetailPiece& piece : slot.pieces)
             {
@@ -570,9 +571,14 @@ function placeHotspots() {
     box.style.height = (100 * spot.h / h) + '%';
     hotspotLayer.appendChild(box);
   });
-  // One box per drawn piece of a homolog (chromosome, excised piece, ecDNA or ring), opening that homolog's zoomed view.
+  // One box per drawn piece of a homolog (chromosome, excised piece, ecDNA or ring), opening that homolog's zoomed view. The two sister
+  // chromatids of a replicated SDD homolog get one box around both, so the pair is outlined as one chromosome.
   (karyograms[current].detailSlots || []).forEach((slot, i) => {
-    for (const piece of slot.pieces) {
+    const areas = slot.sisters ? [slot.pieces.reduce((a, p) => {
+      const x = Math.min(a.x, p.x), y = Math.min(a.y, p.y);
+      return { x, y, w: Math.max(a.x + a.w, p.x + p.w) - x, h: Math.max(a.y + a.h, p.y + p.h) - y };
+    })] : slot.pieces;
+    for (const piece of areas) {
       const box = document.createElement('div');
       box.className = 'piecespot';
       box.dataset.slot = i;
@@ -867,9 +873,75 @@ function piecePath(x, top, bottom, roundTop, roundBottom, pinches) {
   return d + ' Z';
 }
 
+// Outline of one sister chromatid of a replicated SDD homolog, the zoomed form of the karyogram's X shape: at each centromere the outer side
+// is pinched in deeply over a tall stretch with a smooth cosine profile, while the inner side (facing the sister) bulges by half the gap
+// between them so the two sisters touch there. side is 'left' or 'right'; the ends are rounded or flat as in piecePath.
+const D_SISTER_HALF = 12 * D_K, D_SISTER_OUTER = 7 * D_K;   // Half height and depth of a sister chromatid's outer pinch, in px
+// How far a sister chromatid's sides are pinched at screen height py (1 at a centromere centre, 0 outside the pinch), with a cosine profile.
+function sisterBump(py, pinches) {
+  return Math.max(0, ...pinches.map((cy) => {
+    const t = Math.abs(py - cy) / D_SISTER_HALF;
+    return t >= 1 ? 0 : 0.5 * (1 + Math.cos(Math.PI * t));
+  }));
+}
+
+function sisterPath(x, top, bottom, roundTop, roundBottom, pinches, side, gap) {
+  const w = D_WIDTH, r = w / 2, half = D_SISTER_HALF, outer = D_SISTER_OUTER, inner = -gap / 2;
+  const capTop = roundTop && bottom - top > w, capBottom = roundBottom && bottom - top > w;
+  const from = capTop ? top + r : top, to = capBottom ? bottom - r : bottom;
+  const bump = (py) => sisterBump(py, pinches);
+  // Rows along the straight part: the two ends, then every 2 px inside each pinch.
+  const rows = [from, to];
+  for (const cy of pinches) for (let py = cy - half; py <= cy + half; py += 2) if (py > from && py < to) rows.push(py);
+  rows.sort((a, b) => a - b);
+  const rightCut = side === 'left' ? inner : outer, leftCut = side === 'left' ? outer : inner;
+  let d = capTop ? `M${x},${from} A${r},${r} 0 0 1 ${x + w},${from}` : `M${x},${from} L${x + w},${from}`;
+  for (const py of rows) d += ` L${x + w - rightCut * bump(py)},${py}`;
+  d += capBottom ? ` A${r},${r} 0 0 1 ${x},${to}` : ` L${x},${to}`;
+  for (const py of [...rows].reverse()) d += ` L${x + leftCut * bump(py)},${py}`;
+  return d + ' Z';
+}
+
+// Centromeres in the zoomed view: a grey ellipse of half width rx centred on cx over each centromere, at least 5 px tall; a centromere far
+// taller than the window is drawn as a band. cens holds screen tops and bottoms. Alters the SVG only.
+function drawDetailCentromeres(svg, cens, cx, rx, h) {
+  const far = D_WIDTH * 2, clampY = (v) => Math.max(-far, Math.min(h + far, v));
+  for (const c of cens) {
+    if (c.bottom < -far || c.top > h + far) continue;
+    const height = Math.max(5, c.bottom - c.top), cy = (c.top + c.bottom) / 2;
+    if (height > 4 * h) svgElement(svg, 'rect', { x: cx - rx, y: clampY(c.top), width: 2 * rx, height: clampY(c.bottom) - clampY(c.top), fill: '#999999' });
+    else svgElement(svg, 'ellipse', { cx, cy, rx, ry: height / 2, fill: '#999999' });
+  }
+}
+
+// SDD damage sites of a piece at column x, as on the karyogram: a black line past both edges for a DSB, then a white line for the SSBs that
+// gets longer with their number. On a sister chromatid ({ side, gap }) a white line inside the outer pinch is moved towards the inner side,
+// and shortened only if it is still wider than the chromatid there, so it never sticks out of the outline. Alters the SVG only.
+function drawDetailDamages(svg, piece, x, h, sister) {
+  const pinches = sister ? piece.segs.filter((s) => s[6] >= 0).map((s) => ((s[6] + s[7]) / 2 - dTop) / dMbpPerPx) : [];
+  const y = (mbp) => (mbp - dTop) / dMbpPerPx;
+  for (const [mbp, dsb] of piece.damages) {
+    const dy = y(mbp);
+    if (dsb && dy > -2 && dy < h + 2) svgElement(svg, 'line', { x1: x - 4 * D_K, y1: dy, x2: x + D_WIDTH + 4 * D_K, y2: dy, stroke: '#000', 'stroke-width': 1.5 });
+  }
+  for (const [mbp, , ssbs] of piece.damages) {
+    const dy = y(mbp);
+    if (ssbs <= 0 || dy < -2 || dy > h + 2) continue;
+    let half = Math.min(D_WIDTH, (4 + 4 * (ssbs - 1)) * D_K) / 2, cx = x + D_WIDTH / 2;
+    if (sister) {
+      const cut = D_SISTER_OUTER * sisterBump(dy, pinches), margin = 1.5;
+      const left = x + (sister.side === 'left' ? cut : 0) + margin, right = x + D_WIDTH - (sister.side === 'left' ? 0 : cut) - margin;
+      half = Math.min(half, (right - left) / 2);
+      cx = Math.max(left + half, Math.min(right - half, cx));
+    }
+    svgElement(svg, 'line', { x1: cx - half, y1: dy, x2: cx + half, y2: dy, stroke: '#fff', 'stroke-width': 2 });
+  }
+}
+
 // Draws one piece of the slot at column x: fills, white gaps, boundaries, outline, centromeres, one chevron per inverted stretch,
-// moved-piece arrows and indel pointers, all placed with the current zoom. Alters the SVG only.
-function drawDetailPiece(svg, piece, x, h) {
+// moved-piece arrows and indel pointers, all placed with the current zoom. A sister chromatid ({ side, gap }) gets the sister outline and
+// leaves its centromere and damage sites to detailRender, which draws them once both sisters are drawn. Alters the SVG only.
+function drawDetailPiece(svg, piece, x, h, sister) {
   const y = (mbp) => (mbp - dTop) / dMbpPerPx;
   const far = D_WIDTH * 2;
   const top = Math.max(-far, y(0)), bottom = Math.min(h + far, y(piece.len));
@@ -878,7 +950,9 @@ function drawDetailPiece(svg, piece, x, h) {
   const segs = piece.segs.map((s) => ({ start: s[0], end: s[1], color: s[2], gap: !!s[3], rev: !!s[4], second: !!s[5], cenStart: s[6], cenEnd: s[7] }));
   const cens = segs.filter((s) => s.cenStart >= 0).map((s) => ({ top: y(s.cenStart), bottom: y(s.cenEnd) }));
   const pinches = cens.map((c) => (c.top + c.bottom) / 2).filter((cy) => cy > top && cy < bottom);
-  const outlinePath = piecePath(x, top, bottom, roundTop, roundBottom, pinches);
+  const outlinePath = sister ? sisterPath(x, top, bottom, roundTop, roundBottom, pinches, sister.side, sister.gap)
+    : piecePath(x, top, bottom, roundTop, roundBottom, pinches);
+  const bx = x - 6, bw = D_WIDTH + 12;          // Fills reach a little past the piece; the outline clip trims them (a sister's inner bulge included)
   const clipId = 'dclip' + (++dClipId);
   svgElement(svgElement(svg, 'clipPath', { id: clipId }), 'path', { d: outlinePath });
   const body = svgElement(svg, 'g', { 'clip-path': `url(#${clipId})` });
@@ -888,7 +962,7 @@ function drawDetailPiece(svg, piece, x, h) {
   // Fills, then white gaps padded to at least 1 px so even a few deleted bases stay visible.
   for (const s of segs) {
     if (s.gap || !visible(y(s.start), y(s.end))) continue;
-    svgElement(body, 'rect', { x, y: clampY(y(s.start)), width: D_WIDTH, height: Math.max(0.3, clampY(y(s.end)) - clampY(y(s.start))), fill: s.color });
+    svgElement(body, 'rect', { x: bx, y: clampY(y(s.start)), width: bw, height: Math.max(0.3, clampY(y(s.end)) - clampY(y(s.start))), fill: s.color });
   }
   // Indels are taken out of the karyogram drawing, so the piece runs through them: their deleted bases are drawn here as white gaps too,
   // and inserted bases as a blue line across the piece at the site.
@@ -897,7 +971,7 @@ function drawDetailPiece(svg, piece, x, h) {
     if (!visible(y(startMbp), y(endMbp))) continue;
     let a = clampY(y(startMbp)), b = clampY(y(endMbp));
     if (b - a < 1) { const c = (a + b) / 2; a = c - 0.5; b = c + 0.5; }
-    svgElement(body, 'rect', { x, y: a, width: D_WIDTH, height: b - a, fill: '#ffffff' });
+    svgElement(body, 'rect', { x: bx, y: a, width: bw, height: b - a, fill: '#ffffff' });
   }
   for (const [mbp, , , inserted] of piece.markers) {
     if (inserted && y(mbp) > -2 && y(mbp) < h + 2) svgElement(body, 'line', { x1: x, y1: y(mbp), x2: x + D_WIDTH, y2: y(mbp), stroke: '#1e6edc', 'stroke-width': 2 });
@@ -949,24 +1023,9 @@ function drawDetailPiece(svg, piece, x, h) {
     }
   }
 
-  // Centromeres: grey ellipse over the centromere, at least 5 px tall; a centromere far taller than the window is drawn as a band.
-  for (const c of cens) {
-    if (!visible(c.top, c.bottom)) continue;
-    const height = Math.max(5, c.bottom - c.top), cy = (c.top + c.bottom) / 2;
-    if (height > 4 * h) svgElement(svg, 'rect', { x: x - 1, y: clampY(c.top), width: D_WIDTH + 2, height: clampY(c.bottom) - clampY(c.top), fill: '#999999' });
-    else svgElement(svg, 'ellipse', { cx: x + D_WIDTH / 2, cy, rx: D_WIDTH / 2 + 1, ry: height / 2, fill: '#999999' });
-  }
-
-  // SDD damage sites, as on the karyogram: a black line past both edges for a DSB, then a white line for the SSBs that gets longer with their number.
-  for (const [mbp, dsb] of piece.damages) {
-    const dy = y(mbp);
-    if (dsb && dy > -2 && dy < h + 2) svgElement(svg, 'line', { x1: x - 4 * D_K, y1: dy, x2: x + D_WIDTH + 4 * D_K, y2: dy, stroke: '#000', 'stroke-width': 1.5 });
-  }
-  for (const [mbp, , ssbs] of piece.damages) {
-    const dy = y(mbp);
-    if (ssbs <= 0 || dy < -2 || dy > h + 2) continue;
-    const half = Math.min(D_WIDTH, (4 + 4 * (ssbs - 1)) * D_K) / 2;
-    svgElement(svg, 'line', { x1: x + D_WIDTH / 2 - half, y1: dy, x2: x + D_WIDTH / 2 + half, y2: dy, stroke: '#fff', 'stroke-width': 2 });
+  if (!sister) {
+    drawDetailCentromeres(svg, cens, x + D_WIDTH / 2, D_WIDTH / 2 + 1, h);
+    drawDetailDamages(svg, piece, x, h);
   }
 
   // Red hooked arrows of pieces moved within the chromosome, from where they were cut out to their middle, on the left of the piece.
@@ -1089,7 +1148,14 @@ function detailRender() {
   const legendX = 16;                                               // Symbol legend on the far left, then the ruler
   let rulerX = legendX + D_LEGEND_WIDTH + 100;
   let x = rulerX + 30;
-  const columns = dSlot.pieces.filter((piece) => !piece.circular).map((piece) => {
+  // Sister chromatids sit side by side with the karyogram's gap between them (scaled like the width) and no captions, as one X-shaped chromosome.
+  const sisterGap = 1.5 * D_K;
+  const columns = dSlot.pieces.filter((piece) => !piece.circular).map((piece, k) => {
+    if (dSlot.sisters) {
+      const column = { piece, x, sister: { side: k === 0 ? 'left' : 'right', gap: sisterGap } };
+      x = column.x + D_WIDTH + (k === 0 ? sisterGap : 24);
+      return column;
+    }
     const left = piece.arrows.length ? 40 + 6 * piece.arrows.length : 0;
     const captionWidth = 7 * (piece.caption ? piece.caption.length : 0);   // Rough width of the caption
     const labelRoom = piece.markers.length ? 200 : piece.chevrons.length ? 150 : 24;   // Indel and "Inverted ..." labels go right of the piece
@@ -1123,7 +1189,14 @@ function detailRender() {
 
   for (const column of columns) {
     if (column.piece.circular) drawDetailCircle(detailSvg, column.piece, column);
-    else drawDetailPiece(detailSvg, column.piece, column.x, h);
+    else drawDetailPiece(detailSvg, column.piece, column.x, h, column.sister);
+  }
+  // Sisters share one centromere ellipse across the waist where they touch (both outer pinches left out), then get their damage sites on top.
+  const sisters = columns.filter((c) => c.sister);
+  if (sisters.length === 2) {
+    const [left] = sisters, segs = left.piece.segs.filter((s) => s[6] >= 0);
+    drawDetailCentromeres(detailSvg, segs.map((s) => ({ top: y(s[6]), bottom: y(s[7]) })), left.x + D_WIDTH + sisterGap / 2, D_WIDTH - 7 * D_K + sisterGap / 2 + 1, h);
+    for (const c of sisters) drawDetailDamages(detailSvg, c.piece, c.x, h, c.sister);
   }
   dColumns = columns;
 
@@ -1144,7 +1217,7 @@ function detailRender() {
   svgElement(detailSvg, 'rect', { x: 0, y: 0, width, height: 26, fill: '#ffffff' });
   for (const column of columns) {
     if (column.piece.circular) continue;                            // Circles carry their label below them
-    if (column.piece.caption) svgElement(detailSvg, 'text', { x: column.x, y: 17, class: 'caption' }, column.piece.caption);
+    if (column.piece.caption && !column.sister) svgElement(detailSvg, 'text', { x: column.x, y: 17, class: 'caption' }, column.piece.caption);
   }
   drawDetailSummary(detailSvg, legendX + shift, drawDetailLegend(detailSvg, legendX + shift, 36) + 14);
 
@@ -1155,7 +1228,8 @@ function detailRender() {
 // SDD damage sites within a few pixels of a screen point in the zoomed view, nearest first.
 function damageSitesAt(clientX, clientY) {
   const r = detailSvg.getBoundingClientRect(), px = clientX - r.left, py = clientY - r.top;
-  const column = dColumns.find((c) => !c.piece.circular && px >= c.x - 4 * D_K - 4 && px <= c.x + D_WIDTH + 4 * D_K + 4);
+  const linear = dColumns.filter((c) => !c.piece.circular);
+  const column = linear.find((c) => px >= c.x && px <= c.x + D_WIDTH) || linear.find((c) => px >= c.x - 4 * D_K - 4 && px <= c.x + D_WIDTH + 4 * D_K + 4);
   if (!column) return [];
   const sites = column.piece.damages
     .map(([mbp, dsb, ssbs]) => ({ mbp, dsb, ssbs, distance: Math.abs((mbp - dTop) / dMbpPerPx - py) }))
