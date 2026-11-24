@@ -4476,7 +4476,6 @@ void Karyogram::recordDetailBar(double x, double y, double height, double width,
             {
                 detail.originStartMbp = origins[k].lowMbp;
                 detail.originEndMbp = origins[k].highMbp;
-                detail.foreign = detailHomeStrandID > 0 && origins[k].strandID != detailHomeStrandID;
 
                 const auto name = detailStrandNames.find(origins[k].strandID);
                 if (name != detailStrandNames.end())
@@ -4501,8 +4500,50 @@ void Karyogram::recordDetailBar(double x, double y, double height, double width,
 
         const double aboveEdge = piece.segments[k - 1].reversed ? origins[k - 1].lowMbp : origins[k - 1].highMbp;
         const double belowEdge = piece.segments[k + 1].reversed ? origins[k + 1].highMbp : origins[k + 1].lowMbp;
-        detail.originStartMbp = std::min(aboveEdge, belowEdge);
-        detail.originEndMbp = std::max(aboveEdge, belowEdge);
+
+        // The bases between the two cut ends can still be on this piece elsewhere (e.g. inside an inverted segment next to the gap, which reads
+        // back over part of that stretch): the gap's span is narrowed to the bases of that chromosome the piece does not hold, as it is drawn.
+        std::vector<std::pair<double, double>> lost = { { std::min(aboveEdge, belowEdge), std::max(aboveEdge, belowEdge) } };
+
+        for (std::size_t j = 0; j < origins.size(); ++j)
+        {
+            if (piece.segments[j].gap || origins[j].strandID != origins[k - 1].strandID)
+            {
+                continue;
+            }
+
+            std::vector<std::pair<double, double>> remaining;
+            for (const auto& [low, high] : lost)
+            {
+                if (origins[j].highMbp <= low || origins[j].lowMbp >= high)
+                {
+                    remaining.emplace_back(low, high);
+                    continue;
+                }
+                if (origins[j].lowMbp > low)
+                {
+                    remaining.emplace_back(low, origins[j].lowMbp);
+                }
+                if (origins[j].highMbp < high)
+                {
+                    remaining.emplace_back(origins[j].highMbp, high);
+                }
+            }
+            lost = std::move(remaining);
+        }
+
+        if (lost.empty())							// The piece holds every base in between: keep the span between the cut ends
+        {
+            lost = { { std::min(aboveEdge, belowEdge), std::max(aboveEdge, belowEdge) } };
+        }
+
+        detail.originStartMbp = lost.front().first;
+        detail.originEndMbp = lost.front().second;
+        for (const auto& [low, high] : lost)
+        {
+            detail.originStartMbp = std::min(detail.originStartMbp, low);
+            detail.originEndMbp = std::max(detail.originEndMbp, high);
+        }
     }
 
     for (const auto& [topY, bottomY] : chevronsPx)

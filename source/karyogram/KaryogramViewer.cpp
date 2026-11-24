@@ -132,13 +132,12 @@ namespace
                     + ", roundTop: " + (piece.roundTopCap ? "true" : "false") + ", roundBottom: " + (piece.roundBottomCap ? "true" : "false")
                     + ", outline: " + (piece.outline ? "true" : "false") + ", circular: " + (piece.circular ? "true" : "false") + ",\n          segs: [";
 
-                for (const KaryogramDetailSegment& segment : piece.segments)		// [start, end, colour, gap, reversed, second homolog, centromere start, centromere end, original start, original end, origin name, foreign]
+                for (const KaryogramDetailSegment& segment : piece.segments)		// [start, end, colour, gap, reversed, second homolog, centromere start, centromere end, original start, original end, origin name]
                 {
                     js += "[" + jsNumber(segment.startMbp) + "," + jsNumber(segment.endMbp) + ",\"" + cssColor(segment.r, segment.g, segment.b) + "\","
                         + (segment.gap ? "1" : "0") + "," + (segment.reversed ? "1" : "0") + "," + (segment.secondHomolog ? "1" : "0") + ","
                         + jsNumber(segment.centromereStartMbp) + "," + jsNumber(segment.centromereEndMbp) + ","
-                        + jsNumber(segment.originStartMbp) + "," + jsNumber(segment.originEndMbp) + "," + jsString(segment.originName) + ","
-                        + (segment.foreign ? "1" : "0") + "],";
+                        + jsNumber(segment.originStartMbp) + "," + jsNumber(segment.originEndMbp) + "," + jsString(segment.originName) + "],";
                 }
 
                 js += "],\n          chevrons: [";
@@ -656,7 +655,7 @@ function openDetail(slotIndex) {
   const sdd = dSlot.pieces.some((p) => p.damages.length);
   document.getElementById('detailHint').textContent = 'Scroll or pinch to zoom at the cursor · drag to move along the homolog · '
     + (sdd ? 'point at (or tap) a damage site for its breaks · the ruler gives the position from the p-arm end'
-           : 'point at a deleted, inverted, translocated or rearranged segment, or an excised piece, for its span · click a blue pointer to zoom to that indel · ecDNA and rings are drawn as circles sized by their length, not to the ruler scale · the ruler gives the position along each piece, from its top end');
+           : 'point at any stretch of a chromosome for the chromosome it came from and its span · click a blue pointer to zoom to that indel · ecDNA and rings are drawn as circles sized by their length, not to the ruler scale · the ruler gives the position along each piece, from its top end');
   detail.hidden = false;
   detailWhole();
 }
@@ -702,25 +701,90 @@ function circleCaption(piece) {
   return lines;
 }
 
-// Draws a circular piece (ecDNA or ring) as a disc at a fixed screen place below the captions: one wedge per segment in its colour, clockwise
-// from the top, white wedges for deleted bases, and a grey dot on the rim at a ring's centromere. Alters the SVG only.
+// Draws a circular piece (ecDNA or ring) as the karyogram does, as a ring at a fixed screen place below the captions: a coloured band with a
+// white centre half its diameter, one stretch of band per segment in its colour (clockwise from the top), white for deleted bases, a thin line
+// where material of two chromosomes meets, and inner and outer borders that are dashed along material from a second homolog. A ring chromosome
+// is turned so its centromere sits at 12 o'clock, where both circles pinch towards each other (the karyogram's centromere constriction, scaled
+// like the linear pieces' pinch) and a grey ellipse crosses the band. Alters the SVG only.
 function drawDetailCircle(svg, piece, column) {
-  const d = column.diameter, r = d / 2, cx = column.x + r, cy = column.y + r, len = Math.max(1e-12, piece.len);
-  const point = (mbp, radius) => { const a = 2 * Math.PI * mbp / len; return [cx + radius * Math.sin(a), cy - radius * Math.cos(a)]; };
-  const wedge = (startMbp, endMbp, fill) => {
-    if (endMbp - startMbp >= len - 1e-12) { svgElement(svg, 'circle', { cx, cy, r, fill }); return; }
-    const [x0, y0] = point(startMbp, r), [x1, y1] = point(endMbp, r), large = (endMbp - startMbp) / len > 0.5 ? 1 : 0;
-    svgElement(svg, 'path', { d: `M${cx},${cy} L${x0},${y0} A${r},${r} 0 ${large} 1 ${x1},${y1} Z`, fill, stroke: fill, 'stroke-width': 0.6 });
+  const d = column.diameter, r = d / 2, inner = d / 4, cx = column.x + r, cy = column.y + r, len = Math.max(1e-12, piece.len);
+  const cen = piece.segs.find((s) => s[6] >= 0);
+  const turn = cen ? (cen[6] + cen[7]) / 2 : 0;                      // Material at the top of the ring
+  const angle = (mbp) => 2 * Math.PI * (mbp - turn) / len;
+  const point = (mbp, radius) => [cx + radius * Math.sin(angle(mbp)), cy - radius * Math.cos(angle(mbp))];
+  const full = (a, b) => b - a >= len - 1e-9;
+  // One stretch of the band, from startMbp to endMbp clockwise, between the inner and outer circle.
+  const band = (startMbp, endMbp, fill) => {
+    if (full(startMbp, endMbp)) {
+      svgElement(body, 'path', { d: `M${cx - r},${cy} a${r},${r} 0 1 0 ${2 * r},0 a${r},${r} 0 1 0 ${-2 * r},0 Z M${cx - inner},${cy} a${inner},${inner} 0 1 1 ${2 * inner},0 a${inner},${inner} 0 1 1 ${-2 * inner},0 Z`,
+        fill, 'fill-rule': 'evenodd' });
+      return;
+    }
+    const large = (endMbp - startMbp) / len > 0.5 ? 1 : 0;
+    const [ox0, oy0] = point(startMbp, r), [ox1, oy1] = point(endMbp, r), [ix0, iy0] = point(startMbp, inner), [ix1, iy1] = point(endMbp, inner);
+    svgElement(body, 'path', { d: `M${ox0},${oy0} A${r},${r} 0 ${large} 1 ${ox1},${oy1} L${ix1},${iy1} A${inner},${inner} 0 ${large} 0 ${ix0},${iy0} Z`,
+      fill, stroke: fill, 'stroke-width': 0.6 });
   };
+  // One arc of a border circle, solid or dashed.
+  const arc = (startMbp, endMbp, radius, dashed) => {
+    const style = { fill: 'none', stroke: '#1a1a1a', 'stroke-width': 1.5, 'stroke-dasharray': dashed ? '6 4' : 'none' };
+    if (full(startMbp, endMbp)) { svgElement(borders, 'circle', { cx, cy, r: radius, ...style }); return; }
+    const [x0, y0] = point(startMbp, radius), [x1, y1] = point(endMbp, radius), large = (endMbp - startMbp) / len > 0.5 ? 1 : 0;
+    svgElement(borders, 'path', { d: `M${x0},${y0} A${radius},${radius} 0 ${large} 1 ${x1},${y1}`, ...style });
+  };
+
+  // Centromere constriction of a ring: the outer circle pinches inward and the inner one outward at 12 o'clock. The band is clipped to the
+  // pinched shape, and the borders leave out the top so the pinch can be drawn in their place.
+  // Pinch depth and half its angle: at least the linear pieces' pinch, grown with the band and kept wider than the centromere ellipse so it shows.
+  const cenWidth = cen ? Math.min(Math.max(5, 2 * Math.PI * r * (cen[7] - cen[6]) / len), 0.6 * (r - inner)) : 0;
+  const depth = Math.max(2 * D_K, 0.12 * (r - inner)), notch = Math.max(3.5 * D_K, cenWidth / 2 + 2 * depth) / r;
+  const at = (theta, radius) => [cx + radius * Math.sin(theta), cy - radius * Math.cos(theta)];
+  const pinched = (radius, apexRadius) => {
+    const [x0, y0] = at(notch, radius), [x1, y1] = at(-notch, radius);
+    return `M${x0},${y0} A${radius},${radius} 0 1 1 ${x1},${y1} L${cx},${cy - apexRadius} Z`;
+  };
+  let body = svg, borders = svg;
+  if (cen) {
+    const bandClip = 'dclip' + (++dClipId), borderClip = 'dclip' + (++dClipId);
+    svgElement(svgElement(svg, 'clipPath', { id: bandClip }), 'path', { d: pinched(r, r - depth) + ' ' + pinched(inner, inner + depth), 'clip-rule': 'evenodd' });
+    const [bx0, by0] = at(notch, r + 4), [bx1, by1] = at(-notch, r + 4);
+    svgElement(svgElement(svg, 'clipPath', { id: borderClip }), 'path', { d: `M${cx},${cy} L${bx0},${by0} A${r + 4},${r + 4} 0 1 1 ${bx1},${by1} Z` });
+    body = svgElement(svg, 'g', { 'clip-path': `url(#${bandClip})` });
+    borders = svgElement(svg, 'g', { 'clip-path': `url(#${borderClip})` });
+  }
+
   const minMbp = len / 360;                                          // A deleted stretch is at least one degree wide, so it stays visible
-  for (const s of piece.segs) if (!s[3]) wedge(s[0], s[1], s[2]);
+  for (const s of piece.segs) if (!s[3]) band(s[0], s[1], s[2]);
   const gaps = piece.segs.filter((s) => s[3]).map((s) => [s[0], s[1]]).concat(piece.markers.filter((m) => m[2] > 0).map((m) => [m[0], m[0] + m[2]]));
-  for (const [a, b] of gaps) { const c = (a + b) / 2, half = Math.max(b - a, minMbp) / 2; wedge(c - half, c + half, '#ffffff'); }
-  svgElement(svg, 'circle', { cx, cy, r, fill: 'none', stroke: '#1a1a1a', 'stroke-width': 1.5 });
+  for (const [a, b] of gaps) { const c = (a + b) / 2, half = Math.max(b - a, minMbp) / 2; band(c - half, c + half, '#ffffff'); }
+  svgElement(body, 'circle', { cx, cy, r: inner, fill: '#ffffff' });
+
+  // Thin line across the band where the material of two chromosomes meets, as between the wedges of the karyogram's multi-chromosome circles.
+  const solid = piece.segs.filter((s) => !s[3]);
+  for (let k = 0; k < solid.length && solid.length > 1; k++) {
+    const a = solid[k], b = solid[(k + 1) % solid.length];
+    if (a[2] === b[2]) continue;
+    const [ox, oy] = point(a[1] % len, r), [ix, iy] = point(a[1] % len, inner);
+    svgElement(body, 'line', { x1: ox, y1: oy, x2: ix, y2: iy, stroke: '#1a1a1a', 'stroke-width': 0.75 });
+  }
+
+  // Inner and outer borders, dashed along material from a second homolog (a white gap takes the style of the material before it).
+  let dashed = false;
   for (const s of piece.segs) {
-    if (s[6] < 0) continue;
-    const [px, py] = point((s[6] + s[7]) / 2, r);
-    svgElement(svg, 'circle', { cx: px, cy: py, r: 5, fill: '#999999' });
+    if (!s[3]) dashed = !!s[5];
+    arc(s[0], s[1], r, dashed);
+    arc(s[0], s[1], inner, dashed);
+  }
+
+  // Ring chromosome: the grey centromere ellipse across the band (clipped to the pinched band), then the pinch lines of both circles in the
+  // style of the centromere's material.
+  if (cen) {
+    svgElement(body, 'ellipse', { cx, cy: cy - (r + inner) / 2, rx: cenWidth / 2, ry: (r - inner) / 2, fill: '#999999' });
+    for (const [radius, apexRadius] of [[r, r - depth], [inner, inner + depth]]) {
+      const [x0, y0] = at(notch, radius), [x1, y1] = at(-notch, radius);
+      svgElement(svg, 'path', { d: `M${x1},${y1} L${cx},${cy - apexRadius} L${x0},${y0}`, fill: 'none', stroke: '#1a1a1a', 'stroke-width': 1.5,
+        'stroke-dasharray': cen[5] ? '6 4' : 'none' });
+    }
   }
   column.caption.forEach((line, i) => svgElement(svg, 'text', { x: column.x, y: column.y + d + 16 + 15 * i, class: i ? 'tick' : 'caption' }, line));
 }
@@ -928,6 +992,90 @@ function drawDetailPiece(svg, piece, x, h) {
   }
 }
 
+const D_LEGEND_WIDTH = 240;                 // Width of the symbol legend left of the ruler.
+
+// Draws the karyogram's symbol legend as a column in the zoomed view, fixed while zooming: for SDR chromosome, centromere, reversed segment,
+// moved segment and ecDNA (as on the karyogram); for SDD chromosome, double-strand break, single-strand break and centromere. Symbols use the open homolog's colour
+// and are drawn as in the zoomed view. Alters the SVG only.
+function drawDetailLegend(svg, x, y) {
+  const sdd = dSlot.pieces.some((p) => p.damages.length);
+  const firstSeg = dSlot.pieces.flatMap((p) => p.segs).find((s) => !s[3]);
+  const color = firstSeg ? firstSeg[2] : '#e69545';
+  const row = 46, symbolX = x + 14, textX = x + 52;
+  const items = sdd ? ['Chromosome', 'Double-Strand Break', 'Single-Strand Break', 'Centromere']
+                    : ['Chromosome', 'Centromere', 'Reversed Segment', 'Moved Segment', 'ecDNA'];
+  const g = svgElement(svg, 'g', {});
+  svgElement(g, 'rect', { x, y, width: D_LEGEND_WIDTH, height: 34 + row * items.length, fill: '#ffffff', stroke: '#999', rx: 4 });
+  svgElement(g, 'text', { x: x + 12, y: y + 22, 'font-weight': 'bold' }, 'Symbols:');
+  items.forEach((name, i) => {
+    const cy = y + 34 + row * i + row / 2, w = 16, cx = symbolX + w / 2;
+    const bar = (top, height) => svgElement(g, 'rect', { x: symbolX, y: top, width: w, height, fill: color, stroke: '#1a1a1a', 'stroke-width': 1 });
+    if (name === 'Chromosome') {
+      svgElement(g, 'path', { d: piecePathSized(symbolX, cy - 18, cy + 18, w), fill: color, stroke: '#1a1a1a', 'stroke-width': 1.2 });
+    } else if (name === 'Centromere') {
+      svgElement(g, 'ellipse', { cx, cy, rx: w / 2 + 2, ry: 5, fill: '#999999' });
+    } else if (name === 'Reversed Segment') {
+      bar(cy - 12, 24);
+      svgElement(g, 'path', { d: `M${symbolX},${cy + 12} L${cx},${cy - 12} L${symbolX + w},${cy + 12}`, fill: 'none', stroke: '#000', 'stroke-width': 1.5 });
+    } else if (name === 'Moved Segment') {
+      bar(cy - 15, 30);
+      const tipX = symbolX - 1, fromY = cy + 9, toY = cy - 9, headBase = tipX - 6;
+      svgElement(g, 'circle', { cx: tipX, cy: fromY, r: 1.8, fill: '#bf382b' });
+      svgElement(g, 'path', { d: `M${tipX},${fromY} C${symbolX - 14},${fromY} ${symbolX - 14},${toY} ${headBase + 1},${toY}`, fill: 'none', stroke: '#bf382b', 'stroke-width': 1.5 });
+      svgElement(g, 'path', { d: `M${tipX},${toY} L${headBase},${toY - 4} L${headBase + 1.5},${toY} L${headBase},${toY + 4} Z`, fill: '#bf382b' });
+    } else if (name === 'ecDNA') {
+      svgElement(g, 'circle', { cx, cy, r: 13, fill: color, stroke: '#1a1a1a', 'stroke-width': 1.5 });
+      svgElement(g, 'circle', { cx, cy, r: 6.5, fill: '#ffffff', stroke: '#1a1a1a', 'stroke-width': 1.5 });
+    } else if (name === 'Double-Strand Break') {
+      bar(cy - 15, 30);
+      svgElement(g, 'line', { x1: symbolX - 6, y1: cy, x2: symbolX + w + 6, y2: cy, stroke: '#000', 'stroke-width': 1.5 });
+    } else if (name === 'Single-Strand Break') {
+      bar(cy - 15, 30);
+      svgElement(g, 'line', { x1: cx - 5, y1: cy, x2: cx + 5, y2: cy, stroke: '#fff', 'stroke-width': 2 });
+    }
+    svgElement(g, 'text', { x: textX, y: cy + 4 }, name);
+  });
+  return y + 34 + row * items.length;
+}
+
+// Counts of the open homolog, as its chromosome label's popup gives them: the popup section of that homolog (or the only section of a
+// chromosome without homologs). Returns null for slots no label describes, e.g. a piece made of several chromosomes.
+function slotCounts(slot) {
+  const match = /^(.*), homolog (\d+)$/.exec(slot.title);
+  const spot = karyograms[current].hotspots.find((h) => h.title === (match ? match[1] : slot.title));
+  if (!spot) return null;
+  if (!match) return spot.sections.length === 1 ? spot.sections[0].counts : null;
+  const section = spot.sections.find((sec) => sec.heading === 'Homolog ' + match[2]);
+  return section ? section.counts : null;
+}
+
+// Draws the open homolog's mutation (SDR) or damage (SDD) counts in a box below the symbol legend, one row per type with its count on the
+// right, or the "none detected" text; SDR adds the note that events involving several chromosomes count on each. Alters the SVG only.
+function drawDetailSummary(svg, x, y) {
+  const counts = slotCounts(dSlot);
+  if (!counts) return;
+  const sdd = dSlot.pieces.some((p) => p.damages.length);
+  const note = karyograms[current].popupNote ? ['Events involving several', 'chromosomes count on each.'] : [];
+  const rows = counts.length ? counts.length : 1, lastRowY = y + 46 + 20 * (rows - 1), noteY = lastRowY + 26;
+  const height = (note.length ? noteY + 14 * (note.length - 1) : lastRowY) + 14 - y;
+  const g = svgElement(svg, 'g', {});
+  svgElement(g, 'rect', { x, y, width: D_LEGEND_WIDTH, height, fill: '#ffffff', stroke: '#999', rx: 4 });
+  svgElement(g, 'text', { x: x + 12, y: y + 22, 'font-weight': 'bold' }, sdd ? 'Damage:' : 'Mutations:');
+  if (!counts.length) svgElement(g, 'text', { x: x + 12, y: y + 46, 'font-style': 'italic', fill: '#666' }, karyograms[current].popupEmptyText);
+  counts.forEach(([type, count], i) => {
+    svgElement(g, 'text', { x: x + 12, y: y + 46 + 20 * i }, type);
+    svgElement(g, 'text', { x: x + D_LEGEND_WIDTH - 12, y: y + 46 + 20 * i, 'text-anchor': 'end', class: 'tick' }, String(count));
+  });
+  note.forEach((line, i) => svgElement(g, 'text', { x: x + 12, y: noteY + 14 * i, class: 'tick' }, line));
+}
+
+// Outline of a small rounded chromosome w px wide between y top and bottom, with a centromere pinch halfway, for the legend.
+function piecePathSized(x, top, bottom, w) {
+  const r = w / 2, cy = (top + bottom) / 2, depth = 2, half = 3;
+  return `M${x},${top + r} A${r},${r} 0 0 1 ${x + w},${top + r} L${x + w},${cy - half} L${x + w - depth},${cy} L${x + w},${cy + half}`
+    + ` L${x + w},${bottom - r} A${r},${r} 0 0 1 ${x},${bottom - r} L${x},${cy + half} L${x + depth},${cy} L${x},${cy - half} Z`;
+}
+
 // Redraws the open slot: ruler on the left, then each piece in its own column, captions on top. Alters the SVG and the scale readout.
 function detailRender() {
   if (!dSlot) return;
@@ -938,7 +1086,8 @@ function detailRender() {
   detailSvg.replaceChildren();
 
   // Columns: room on the left of a piece for its arrows, on the right for indel and inversion labels.
-  let rulerX = 100;
+  const legendX = 16;                                               // Symbol legend on the far left, then the ruler
+  let rulerX = legendX + D_LEGEND_WIDTH + 100;
   let x = rulerX + 30;
   const columns = dSlot.pieces.filter((piece) => !piece.circular).map((piece) => {
     const left = piece.arrows.length ? 40 + 6 * piece.arrows.length : 0;
@@ -997,6 +1146,7 @@ function detailRender() {
     if (column.piece.circular) continue;                            // Circles carry their label below them
     if (column.piece.caption) svgElement(detailSvg, 'text', { x: column.x, y: 17, class: 'caption' }, column.piece.caption);
   }
+  drawDetailSummary(detailSvg, legendX + shift, drawDetailLegend(detailSvg, legendX + shift, 36) + 14);
 
   const pxPerBase = 1 / (dMbpPerPx * 1e6);
   detailScale.textContent = pxPerBase >= 1 ? `1 base = ${pxPerBase.toFixed(1)} px` : `1 px = ${formatLength(dMbpPerPx)}`;
@@ -1007,10 +1157,16 @@ function damageSitesAt(clientX, clientY) {
   const r = detailSvg.getBoundingClientRect(), px = clientX - r.left, py = clientY - r.top;
   const column = dColumns.find((c) => !c.piece.circular && px >= c.x - 4 * D_K - 4 && px <= c.x + D_WIDTH + 4 * D_K + 4);
   if (!column) return [];
-  return column.piece.damages
+  const sites = column.piece.damages
     .map(([mbp, dsb, ssbs]) => ({ mbp, dsb, ssbs, distance: Math.abs((mbp - dTop) / dMbpPerPx - py) }))
     .filter((site) => site.distance <= 4)
     .sort((a, b) => a.distance - b.distance || a.mbp - b.mbp);
+  // The sites the tooltip lists, to outline while they are pointed at; the box reaches past the piece as far as a DSB line does.
+  if (sites.length) {
+    const listed = sites.slice(0, 6).map((site) => site.mbp);
+    sites.box = { x: column.x, start: Math.min(...listed), end: Math.max(...listed), padX: 4 * D_K + 4 };
+  }
+  return sites;
 }
 
 // Shows what the damage sites under the pointer are: per site its position, "Double Strand Break" when there is one and the number of SSBs.
@@ -1033,7 +1189,22 @@ function showDamageTip(clientX, clientY) {
   detailTip.style.top = Math.max(8, Math.min(clientY + 14, window.innerHeight - box.height - 8)) + 'px';
 }
 
-function hideDamageTip() { detailTip.hidden = true; }
+// Hides the tooltip and the outline of the stretch it described.
+function hideDamageTip() { detailTip.hidden = true; showStretchBox(null); }
+
+// Outlines the stretch or damage sites the tooltip describes with a light blue box a little wider than the piece (padX px each side) and at
+// least 6 px tall, so a white gap of a few bases or a single damage site is still boxed; removes the outline when box is null. Alters the SVG only.
+function showStretchBox(box) {
+  const old = document.getElementById('detailStretchBox');
+  if (old) old.remove();
+  if (!box) return;
+  const h = detailView.clientHeight, y = (mbp) => (mbp - dTop) / dMbpPerPx;
+  let top = Math.max(-4, y(box.start)), bottom = Math.min(h + 4, y(box.end));
+  if (bottom - top < 6) { const c = (top + bottom) / 2; top = c - 3; bottom = c + 3; }
+  const padX = box.padX || 4;
+  svgElement(detailSvg, 'rect', { id: 'detailStretchBox', x: box.x - padX, y: top - 2, width: D_WIDTH + 2 * padX, height: bottom - top + 4, rx: 3,
+    fill: 'none', stroke: '#4fb3ff', 'stroke-width': 2.5, 'pointer-events': 'none' });
+}
 
 // Formats an original span in Mbp with up to six decimals (single bases), e.g. "40.000001 – 60 Mbp".
 function formatSpan(startMbp, endMbp) {
@@ -1041,65 +1212,35 @@ function formatSpan(startMbp, endMbp) {
   return `${mbp(startMbp)} – ${mbp(endMbp)} Mbp`;
 }
 
-// Indexes of the segments of a chromosome that are its own material still in its original order: the longest run (in drawn order) of its own
-// forward segments whose original positions keep increasing. Its other own forward segments were moved within the chromosome. Cached on the piece.
-function inPlaceSegments(piece) {
-  if (piece.inPlace) return piece.inPlace;
-  const own = [];
-  piece.segs.forEach((s, i) => { if (!s[3] && !s[4] && !s[11] && s[8] >= 0) own.push(i); });
-  const best = own.map(() => 1), previous = own.map(() => -1);
-  for (let a = 0; a < own.length; a++) {
-    for (let b = 0; b < a; b++) {
-      if (piece.segs[own[b]][8] < piece.segs[own[a]][8] && best[b] + 1 > best[a]) { best[a] = best[b] + 1; previous[a] = b; }
-    }
-  }
-  piece.inPlace = new Set();
-  let k = best.indexOf(Math.max(0, ...best));
-  while (k >= 0) { piece.inPlace.add(own[k]); k = previous[k]; }
-  return piece.inPlace;
-}
-
-// What the pointer is over in an SDR piece, when it is worth a tooltip: a white deletion gap (at least 3 px wide to aim at), a segment of a
-// chromosome that is not its own material in its original place (inverted, translocated in, or moved within the chromosome), or any part of
-// an excised piece. Circles (ecDNA, rings) get none, their label already gives their span. Returns the tooltip lines, the first one bold, or null.
+// What the pointer is over in an SDR chromosome or excised piece: the chromosome its bases came from and their original span, for every
+// stretch (a white gap gives the chromosome and span of the deleted bases). No mutation names: those are the detectors' reading, the tooltip
+// gives only what the SDR record says. Circles (ecDNA, rings) get none, their label already gives their span. Returns the tooltip lines, the
+// first one bold, or null.
 function segmentTipAt(clientX, clientY) {
   const r = detailSvg.getBoundingClientRect(), px = clientX - r.left, py = clientY - r.top;
   const column = dColumns.find((c) => !c.piece.circular && px >= c.x && px <= c.x + D_WIDTH);
   if (!column || column.piece.damages.length) return null;
-  const piece = column.piece, at = dTop + py * dMbpPerPx, slack = 1.5 * dMbpPerPx;
+  const piece = column.piece, segs = piece.segs, at = dTop + py * dMbpPerPx, slack = 1.5 * dMbpPerPx;
   if (at < 0 || at > piece.len) return null;
-  const segs = piece.segs.map((s) => ({ start: s[0], end: s[1], gap: !!s[3], from: s[8], to: s[9] }));
-  const gap = segs.find((s) => s.gap && at >= s.start - slack && at <= s.end + slack);
-  if (gap) {
-    const lines = ['Deleted segment'];
-    if (gap.from >= 0) lines.push(formatSpan(gap.from, gap.to));
-    return lines;
-  }
-  if (!piece.outline) return spanLines('Excised piece', piece);      // An excised piece describes its whole span
-  const index = piece.segs.findIndex((s) => !s[3] && at >= s[0] && at <= s[1]);
-  if (index < 0) return null;
-  const seg = piece.segs[index], from = seg[8], to = seg[9], name = seg[10], foreign = !!seg[11], inverted = !!seg[4];
-  if (from < 0 || (!inverted && !foreign && inPlaceSegments(piece).has(index))) return null;   // Own material in its place: nothing to add
-  const lines = [inverted ? 'Inverted segment' : foreign ? 'Translocated segment' : 'Rearranged segment'];
-  if (foreign && name) lines.push('From ' + name);
-  lines.push(formatSpan(from, to));
-  return lines;
-}
-
-// Tooltip lines naming a piece and listing the original span of its material (up to six stretches).
-function spanLines(name, piece) {
-  const known = pieceSpans(piece);
-  const lines = [name];
-  for (const s of known.slice(0, 6)) lines.push(formatSpan(s.from, s.to));
-  if (known.length > 6) lines.push(`and ${known.length - 6} more pieces`);
+  // A white gap first, with a little slack so even a gap of a few bases can be aimed at; otherwise the stretch under the pointer.
+  let index = segs.findIndex((s) => s[3] && at >= s[0] - slack && at <= s[1] + slack);
+  if (index < 0) index = segs.findIndex((s) => at >= s[0] && at <= s[1]);
+  if (index < 0 || segs[index][8] < 0) return null;
+  let name = segs[index][10];
+  for (let k = index - 1; !name && k >= 0; k--) if (!segs[k][3]) name = segs[k][10];          // A gap belongs to the chromosome around it
+  for (let k = index + 1; !name && k < segs.length; k++) if (!segs[k][3]) name = segs[k][10];
+  const lines = [name || 'Unknown chromosome', formatSpan(segs[index][8], segs[index][9])];
+  lines.box = { x: column.x, start: segs[index][0], end: segs[index][1] };   // The stretch to outline while it is pointed at
   return lines;
 }
 
 // Shows the tooltip for whatever is under the pointer: SDD damage sites first, otherwise the span of a deleted segment or excised piece (circles carry their span in their label).
 function showDetailTip(clientX, clientY) {
-  if (damageSitesAt(clientX, clientY).length) { showDamageTip(clientX, clientY); return; }
+  const sites = damageSitesAt(clientX, clientY);
+  if (sites.length) { showDamageTip(clientX, clientY); showStretchBox(sites.box); return; }
   const lines = segmentTipAt(clientX, clientY);
   if (!lines) { hideDamageTip(); return; }
+  showStretchBox(lines.box);
   detailTip.replaceChildren();
   const group = addElement(detailTip, 'div', undefined, 'tipsite');
   lines.forEach((line, i) => addElement(group, 'div', line, i === 0 ? 'site' : undefined));
