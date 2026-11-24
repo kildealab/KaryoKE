@@ -1,8 +1,10 @@
 #include "KaryogramViewer.h"
+#include "Karyogram.h"
 #include "generalUtilities.h"
 #include "KaryoKEversion.h"
 
 #include <algorithm>
+#include <map>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -118,6 +120,47 @@ namespace
     // Write the clickable homologs of one karyogram as a JavaScript array for the zoomed homolog view: per slot its title, whether its pieces are
     // sister chromatids (SDD replicated homolog) and its pieces, each piece
     // with its clickable area on the karyogram and its segments, chevrons, arrows, boundary styles and indel markers in Mbp along the piece.
+    // The GRCh38 cytobands (humanCytobands in KaryogramLayout.cpp) as a JavaScript object for the cytoband strip of the zoomed homolog view:
+    // per chromosome one "band:end bp:stain" list from the p-arm end, each band starting where the previous one ends. Stain codes: 0 gneg,
+    // 1-4 gpos25/50/75/100, a acen, v gvar, s stalk. Written into the viewer only when a karyogram was drawn as a human genome.
+    std::string cytobandsJs()
+    {
+        const std::map<std::string, std::string> stainCodes = {
+            {"gneg", "0"}, {"gpos25", "1"}, {"gpos50", "2"}, {"gpos75", "3"}, {"gpos100", "4"}, {"acen", "a"}, {"gvar", "v"}, {"stalk", "s"} };
+        std::string js = "{";
+        std::string chromosome;
+
+        for (const CytobandPosition& band : humanCytobands)
+        {
+            if (band.chromosome != chromosome)
+            {
+                js += (chromosome.empty() ? "\"" : "\",\n\"") + band.chromosome + "\":\"";
+                chromosome = band.chromosome;
+            }
+            else
+            {
+                js += ",";
+            }
+
+            const auto code = stainCodes.find(band.stain);
+            js += band.name + ":" + std::to_string(band.end) + ":" + (code == stainCodes.end() ? "0" : code->second);
+        }
+
+        return js + (chromosome.empty() ? "}" : "\"}");
+    }
+
+    // True when any homolog of the karyograms carries chromosome lengths for cytobands (karyograms drawn as a human genome).
+    bool anyCytobands(const std::vector<KaryogramImage>& images)
+    {
+        for (const KaryogramImage& image : images)
+            for (const KaryogramDetailSlot& slot : image.detailSlots)
+                for (const KaryogramDetailPiece& piece : slot.pieces)
+                    for (const KaryogramDetailSegment& segment : piece.segments)
+                        if (segment.originLengthMbp > 0.0)
+                            return true;
+        return false;
+    }
+
     std::string detailSlotsJs(const std::vector<KaryogramDetailSlot>& slots)
     {
         std::string js = "[";
@@ -138,7 +181,8 @@ namespace
                     js += "[" + jsNumber(segment.startMbp) + "," + jsNumber(segment.endMbp) + ",\"" + cssColor(segment.r, segment.g, segment.b) + "\","
                         + (segment.gap ? "1" : "0") + "," + (segment.reversed ? "1" : "0") + "," + (segment.secondHomolog ? "1" : "0") + ","
                         + jsNumber(segment.centromereStartMbp) + "," + jsNumber(segment.centromereEndMbp) + ","
-                        + jsNumber(segment.originStartMbp) + "," + jsNumber(segment.originEndMbp) + "," + jsString(segment.originName) + "],";
+                        + jsNumber(segment.originStartMbp) + "," + jsNumber(segment.originEndMbp) + "," + jsString(segment.originName) + ","
+                        + jsNumber(segment.originLengthMbp) + "],";
                 }
 
                 js += "],\n          chevrons: [";
@@ -384,7 +428,8 @@ button, select { font-size: 14px; padding: 4px 10px; cursor: pointer; }
     // ------------------------------------------
     // Each image is embedded as a base64 data: URL so the HTML file works on its own, with no other files or server.
     // The SVG is shown and both formats are kept for the download buttons.
-    html << "<script>\nconst TITLE = " << jsString(title) << ";\nconst karyograms = [\n";
+    html << "<script>\nconst TITLE = " << jsString(title) << ";\nconst CYTOBANDS = " << (anyCytobands(images) ? cytobandsJs() : std::string("null"))
+         << ";\nconst karyograms = [\n";
 
     for (const KaryogramImage& image : images)
     {
@@ -649,6 +694,7 @@ const D_TOP = 44, D_BOTTOM = 24;            // Room above the pieces (captions) 
 const D_WIDTH = 56;                         // Drawn width of a piece; the karyogram's details (pinch, dashes) are scaled from its 20 px.
 const D_K = D_WIDTH / 20;
 let dSlot = null, dTop = 0, dMbpPerPx = 1, dDrag = null, dClipId = 0, dColumns = [];
+let dLabelShift = 0;                         // Room taken right of each piece by its cytoband strip; indel and inversion labels go after it
 const detailTip = document.getElementById('detailTip');
 
 // Opens the zoomed view of one homolog slot of the karyogram shown, fitted to the window. Alters the view state and shows the overlay.
@@ -1039,16 +1085,89 @@ function drawDetailPiece(svg, piece, x, h, sister) {
   });
 
   // Labels for inverted stretches whose chevron tip is above the window, so the inversion is still named.
-  for (const [labelY, text] of labels) svgElement(svg, 'text', { x: x + D_WIDTH + 8, y: labelY, class: 'inverted' }, text);
+  for (const [labelY, text] of labels) svgElement(svg, 'text', { x: x + D_WIDTH + dLabelShift + 8, y: labelY, class: 'inverted' }, text);
 
   // Indels: never drawn on the karyogram, marked here with a pointer and their size; a click on one zooms to it.
   for (const [mbp, text] of piece.markers) {
     const my = y(mbp);
     if (my < -8 || my > h + 8) continue;
     const g = svgElement(svg, 'g', { class: 'marker', 'data-mbp': mbp });
-    svgElement(g, 'path', { d: `M${x + D_WIDTH + 3},${my} l10,-6 v12 z`, fill: '#1e6edc' });
-    svgElement(g, 'text', { x: x + D_WIDTH + 16, y: my + 4 }, text);
+    svgElement(g, 'path', { d: `M${x + D_WIDTH + dLabelShift + 3},${my} l10,-6 v12 z`, fill: '#1e6edc' });
+    svgElement(g, 'text', { x: x + D_WIDTH + dLabelShift + 16, y: my + 4 }, text);
   }
+}
+
+
+// ------------------------------------------------------------
+// Cytobands (human genome only): a band-only chromosome to the right of each piece in the zoomed view
+// ------------------------------------------------------------
+const D_BAND_W = 20, D_BAND_GAP = 18, D_BAND_ROOM = D_BAND_GAP + D_BAND_W + 72;   // Strip, its gap from the piece, and room for band names
+const BAND_FILL = { 0: '#ffffff', 1: '#d9d9d9', 2: '#a6a6a6', 3: '#6e6e6e', 4: '#1a1a1a', a: '#c0504d', v: '#c9d7ee', s: '#c9d7ee' };
+let bandTable = null;
+// GRCh38 bands per chromosome ("1".."22", "X", "Y") in Mbp, parsed once from CYTOBANDS; each list also has its chromosome length.
+function cytobands() {
+  if (!CYTOBANDS) return null;
+  if (!bandTable) {
+    bandTable = {};
+    for (const [chr, text] of Object.entries(CYTOBANDS)) {
+      let start = 0;
+      const list = text.split(',').map((entry) => {
+        const [name, end, stain] = entry.split(':');
+        const band = { name: chr + name, start, end: Number(end) / 1e6, stain };
+        start = band.end;
+        return band;
+      });
+      list.len = start;
+      bandTable[chr] = list;
+    }
+  }
+  return bandTable;
+}
+// True when the open homolog carries chromosome lengths for cytobands, i.e. its karyogram was drawn as a human genome.
+function slotHasBands(slot) { return !!cytobands() && slot.pieces.some((p) => !p.circular && p.segs.some((s) => s[11] > 0)); }
+function bandKey(name) { const m = /^Chromosome (\w+)/.exec(name || ''); return m ? m[1] : null; }
+
+// Draws the cytoband strip of a piece at x: for every stretch, the GRCh38 bands of the place it came from, scaled to the file's length of
+// that chromosome (reversed for an inverted stretch, the other chromosome's bands for a translocated one). White gaps stay blank, a black
+// line marks each breakpoint where the strip stops following one continuous stretch, and band names are written to its right once a band
+// is tall enough. Alters the SVG only.
+function drawBandStrip(svg, piece, x, h, slotTitle) {
+  const table = cytobands(), y = (mbp) => (mbp - dTop) / dMbpPerPx, far = D_WIDTH * 2;
+  const top = Math.max(-far, y(0)), bottom = Math.min(h + far, y(piece.len));
+  if (bottom < -far || top > h + far) return;
+  const r = D_BAND_W / 2, capTop = piece.roundTop && y(0) > -far && bottom - top > D_BAND_W, capBottom = piece.roundBottom && y(piece.len) < h + far && bottom - top > D_BAND_W;
+  const d = (capTop ? `M${x},${top + r} A${r},${r} 0 0 1 ${x + D_BAND_W},${top + r}` : `M${x},${top} L${x + D_BAND_W},${top}`)
+    + (capBottom ? ` L${x + D_BAND_W},${bottom - r} A${r},${r} 0 0 1 ${x},${bottom - r}` : ` L${x + D_BAND_W},${bottom} L${x},${bottom}`) + ' Z';
+  const clipId = 'dclip' + (++dClipId);
+  svgElement(svgElement(svg, 'clipPath', { id: clipId }), 'path', { d });
+  const g = svgElement(svg, 'g', { 'clip-path': `url(#${clipId})` });
+  svgElement(g, 'rect', { x, y: top, width: D_BAND_W, height: bottom - top, fill: '#ffffff' });
+  const labels = [];
+  for (const s of piece.segs) {
+    const ref = table[bandKey(s[10] || slotTitle)];
+    if (s[3] || !(s[11] > 0) || !ref) continue;
+    // Original span of the stretch on the file's chromosome, then on GRCh38 (scaled by GRCh38 length / file length).
+    const o0 = s[8] >= 0 ? s[8] : s[0], o1 = s[8] >= 0 ? s[9] : s[1], k = ref.len / s[11], r0 = o0 * k, r1 = o1 * k, rev = !!s[4];
+    if (r1 <= r0 || !(y(s[1]) >= -far && y(s[0]) <= h + far)) continue;
+    const toPiece = (v) => rev ? s[1] - (v - r0) / (r1 - r0) * (s[1] - s[0]) : s[0] + (v - r0) / (r1 - r0) * (s[1] - s[0]);
+    for (const band of ref) {
+      const a = Math.max(band.start, r0), e = Math.min(band.end, r1);
+      if (e <= a) continue;
+      const ya = y(Math.min(toPiece(a), toPiece(e))), yb = y(Math.max(toPiece(a), toPiece(e)));
+      if (yb < -far || ya > h + far) continue;
+      const ta = Math.max(-far, ya), tb = Math.min(h + far, yb);
+      svgElement(g, 'rect', { x, y: ta, width: D_BAND_W, height: Math.max(0.5, tb - ta), fill: BAND_FILL[band.stain] || '#ffffff' });
+      if (band.stain === 'v' || band.stain === 's') svgElement(g, 'path', { d: `M${x},${ta} L${x + D_BAND_W},${tb}`, stroke: '#7d93bd' });
+      if (yb - ya >= 13 && yb > 26 && ya < h) labels.push([(Math.max(26, ya) + Math.min(h, yb)) / 2, band.name]);
+    }
+  }
+  for (let i = 0; i + 1 < piece.segs.length; i++) {
+    const a = piece.segs[i], b = piece.segs[i + 1], by = y(a[1]);
+    const continuous = !a[3] && !b[3] && a[10] === b[10] && a[4] === b[4] && a[8] >= 0 && Math.abs((a[4] ? a[8] : a[9]) - (b[4] ? b[9] : b[8])) < 1e-9;
+    if (!continuous && by > -2 && by < h + 2) svgElement(g, 'line', { x1: x, y1: by, x2: x + D_BAND_W, y2: by, stroke: '#1a1a1a', 'stroke-width': 2 });
+  }
+  svgElement(svg, 'path', { d, fill: 'none', stroke: '#1a1a1a', 'stroke-width': 1.2 });
+  for (const [ly, text] of labels) svgElement(svg, 'text', { x: x + D_BAND_W + 5, y: ly + 4, class: 'tick' }, text);
 }
 
 const D_LEGEND_WIDTH = 240;                 // Width of the symbol legend left of the ruler.
@@ -1150,10 +1269,14 @@ function detailRender() {
   let x = rulerX + 30;
   // Sister chromatids sit side by side with the karyogram's gap between them (scaled like the width) and no captions, as one X-shaped chromosome.
   const sisterGap = 1.5 * D_K;
+  // Human genome: every linear piece (a sister pair as one) gets a cytoband strip just right of it, before its other labels.
+  const bands = slotHasBands(dSlot), bandColumns = [];
+  dLabelShift = bands ? D_BAND_ROOM : 0;
   const columns = dSlot.pieces.filter((piece) => !piece.circular).map((piece, k) => {
     if (dSlot.sisters) {
       const column = { piece, x, sister: { side: k === 0 ? 'left' : 'right', gap: sisterGap } };
       x = column.x + D_WIDTH + (k === 0 ? sisterGap : 24);
+      if (bands && k === 1) { bandColumns.push({ piece, x: column.x + D_WIDTH + D_BAND_GAP }); x += D_BAND_ROOM; }
       return column;
     }
     const left = piece.arrows.length ? 40 + 6 * piece.arrows.length : 0;
@@ -1161,7 +1284,8 @@ function detailRender() {
     const labelRoom = piece.markers.length ? 200 : piece.chevrons.length ? 150 : 24;   // Indel and "Inverted ..." labels go right of the piece
     const right = Math.max(labelRoom, captionWidth - D_WIDTH + 16);
     const column = { piece, x: x + left };
-    x += left + D_WIDTH + right;
+    if (bands) bandColumns.push({ piece, x: column.x + D_WIDTH + D_BAND_GAP });
+    x += left + D_WIDTH + right + dLabelShift;
     return column;
   });
   // Circles (ecDNA, rings) are stacked top to bottom after the linear pieces, each with its label below it, fixed while zooming;
@@ -1183,10 +1307,12 @@ function detailRender() {
   const width = Math.max(detailView.clientWidth, x);
   const shift = Math.max(0, (width - x) / 2);                       // Centre the ruler and pieces when the panel is wider than they are
   for (const column of columns) column.x += shift;
+  for (const column of bandColumns) column.x += shift;
   detailSvg.setAttribute('width', width);
   detailSvg.setAttribute('height', h);
   detailSvg.setAttribute('viewBox', `0 0 ${width} ${h}`);
 
+  for (const column of bandColumns) drawBandStrip(detailSvg, column.piece, column.x, h, dSlot.title);
   for (const column of columns) {
     if (column.piece.circular) drawDetailCircle(detailSvg, column.piece, column);
     else drawDetailPiece(detailSvg, column.piece, column.x, h, column.sister);

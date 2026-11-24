@@ -4482,6 +4482,13 @@ void Karyogram::recordDetailBar(double x, double y, double height, double width,
                 {
                     detail.originName = name->second;
                 }
+
+                // Human genome: the file's length of the original chromosome, to scale its GRCh38 cytobands in the zoomed view.
+                const std::size_t sizeIndex = static_cast<std::size_t>(origins[k].strandID);
+                if (detailHumanGenome && detailMasterHeader != nullptr && sizeIndex >= 1 && sizeIndex < detailMasterHeader->intactChromosomeSizes.size())
+                {
+                    detail.originLengthMbp = detailMasterHeader->intactChromosomeSizes[sizeIndex];
+                }
             }
             continue;
         }

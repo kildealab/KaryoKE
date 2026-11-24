@@ -64,6 +64,17 @@ struct CentromerePosition                       // Map the centromere start and 
 
 };
 
+struct CytobandPosition                         // One GRCh38 cytoband, for the cytoband strip of the zoomed homolog view (human genome only).
+{
+    std::string chromosome;                     // 1-22, X, Y
+    long long start;                            // Start position in base pairs
+    long long end;                              // End position in base pairs
+    std::string name;                           // Band name without the chromosome, e.g. "p36.33"
+    std::string stain;                          // Giemsa stain: gneg, gpos25, gpos50, gpos75, gpos100, acen, gvar or stalk
+};
+
+extern const std::vector<CytobandPosition> humanCytobands;     // GRCh38 cytobands of chromosomes 1-22, X and Y, from the p-arm end (KaryogramLayout.cpp)
+
 
 
 

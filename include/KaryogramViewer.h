@@ -34,6 +34,8 @@ struct KaryogramDetailSegment                   // One stretch of a drawn chromo
     double originStartMbp = -1.0;               // Span of these bases on the chromosome they came from (for a white gap: the deleted span); -1 when not known.
     double originEndMbp = -1.0;
     std::string originName;                     // Homolog the material came from, e.g. "Chromosome 5, homolog 2"; empty for white gaps or when not known.
+    double originLengthMbp = -1.0;              // Human genome only: length of that chromosome in the file, so the zoomed view can scale the GRCh38
+                                                // cytobands to it; -1 draws no cytobands (non-human genome, white gaps).
 };
 
 struct KaryogramDetailMarker                    // A feature too small to see at most zoom levels, e.g. an indel, marked with a pointer.

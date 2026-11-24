@@ -822,6 +822,7 @@ bool Karyogram::renderSDDkaryogram(                                           //
         segment.g = geometry.color.g;
         segment.b = geometry.color.b;
         segment.secondHomolog = geometry.secondHomolog;
+        segment.originLengthMbp = humanGenome ? sizeMbp : -1.0;           // Human genome: the zoomed view draws GRCh38 cytobands scaled to this length
 
         if (geometry.centromereEnd > geometry.centromereStart)
         {
