@@ -60,6 +60,7 @@ struct CentromerePosition                       // Map the centromere start and 
     std::string chromosome;                     // 1-22, X, Y
     long long start;                            // Start position in base pairs
     long long end;                              // End position in base pairs
+    long long length;                           // Length of the whole GRCh38 chromosome in base pairs, to scale the centromere to the file's chromosome size
 
 };
 

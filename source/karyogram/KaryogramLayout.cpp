@@ -102,33 +102,34 @@ ChromosomeLayout Karyogram::determineChromosomeLayout(
 
 
 
-// Based on the GRCh38 build available at genome.ucsc.edu/cgi-bin/hgTables
+// Based on the GRCh38 build available at genome.ucsc.edu/cgi-bin/hgTables. Positions are on the GRCh38 chromosome; files that list larger or
+// smaller chromosome sizes get the centromere scaled by fileSize / length, so it keeps the same relative place along the chromosome.
 const std::vector<CentromerePosition> humanCentromeres =                   // Vector storing the associated chromosome ID centromere positions to
 {                                                                          // draw the centromere location if the human option of '--karyotype' is passed by the user in the command-line
-    {"1", 122026459, 124932724},                                           // Each vector element contains {'Chromosome ID', Centromere Start Position (bp), Centromere End Position (bp)}
-    {"2",  91553419,  94090557},
-    {"3",  90772458,  93655574},
-    {"4",  49712061,  51743951},
-    {"5",  46485900,  50059807},
-    {"6",  58553888,  59829934},
-    {"7",  58169653,  61528020},
-    {"8",  44033744,  45877265},
-    {"9",  43389635,  45518558},
-    {"10", 39686682,  41593521},
-    {"11", 51078348,  54425074},
-    {"12", 34769407,  37185252},
-    {"13", 16000000,  18051248},
-    {"14", 16000000,  18173523},
-    {"15", 17083673,  19725254},
-    {"16", 36311158,  38265669},
-    {"17", 22813679,  26616164},
-    {"18", 15460899,  20861206},
-    {"19", 24498980,  27190874},
-    {"20", 26436232,  30038348},
-    {"21", 10864560,  12915808},
-    {"22", 12954788,  15054318},
-    {"Y", 10316944, 10544039},
-    {"X", 58605579, 62412542}
+    {"1", 122026459, 124932724, 248956422},                                           // Each element: {'Chromosome ID', Centromere Start (bp), Centromere End (bp), GRCh38 chromosome length (bp)}
+    {"2",  91553419,  94090557, 242193529},
+    {"3",  90772458,  93655574, 198295559},
+    {"4",  49712061,  51743951, 190214555},
+    {"5",  46485900,  50059807, 181538259},
+    {"6",  58553888,  59829934, 170805979},
+    {"7",  58169653,  61528020, 159345973},
+    {"8",  44033744,  45877265, 145138636},
+    {"9",  43389635,  45518558, 138394717},
+    {"10", 39686682,  41593521, 133797422},
+    {"11", 51078348,  54425074, 135086622},
+    {"12", 34769407,  37185252, 133275309},
+    {"13", 16000000,  18051248, 114364328},
+    {"14", 16000000,  18173523, 107043718},
+    {"15", 17083673,  19725254, 101991189},
+    {"16", 36311158,  38265669,  90338345},
+    {"17", 22813679,  26616164,  83257441},
+    {"18", 15460899,  20861206,  80373285},
+    {"19", 24498980,  27190874,  58617616},
+    {"20", 26436232,  30038348,  64444167},
+    {"21", 10864560,  12915808,  46709983},
+    {"22", 12954788,  15054318,  50818468},
+    {"Y", 10316944, 10544039,  57227415},
+    {"X", 58605579, 62412542, 156040895}
 };
 
 
@@ -285,8 +286,14 @@ bool Karyogram::getCentromereForOriginalStrand(
             return false;
         }
 
-        centromereStartBP = static_cast<double>(centromere->start);
-        centromereEndBP = static_cast<double>(centromere->end);
+        // Scale the GRCh38 centromere to the file's own chromosome size, so it keeps its relative place when the file's chromosomes are
+        // longer or shorter than GRCh38. Without a size for this strand the GRCh38 positions are used as they are.
+        const std::size_t sizeIndex = static_cast<std::size_t>(oldStrandID);
+        const double scale = (sizeIndex >= 1 && sizeIndex < sizes.size() && sizes[sizeIndex] > 0.0 && centromere->length > 0)
+            ? sizes[sizeIndex] * 1000000.0 / static_cast<double>(centromere->length) : 1.0;
+
+        centromereStartBP = static_cast<double>(centromere->start) * scale;
+        centromereEndBP = static_cast<double>(centromere->end) * scale;
 
         return true;
 

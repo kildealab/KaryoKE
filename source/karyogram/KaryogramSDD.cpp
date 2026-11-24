@@ -371,9 +371,9 @@ bool Karyogram::renderSDDkaryogram(                                           //
 
                 if (centromere != nullptr)
                 {
-                    // Set corresponding centromere ranges and convert to fraction of the chromosome length for conversion to pixels later.
-                    centromereStart = static_cast<double>(centromere->start) / (chromosomeSize * 1000000.0);        // chromosome sizes listed in Mbp, convert to bp.
-                    centromereEnd = static_cast<double>(centromere->end)/ (chromosomeSize*1000000.0);
+                    // Centromere as a fraction of the GRCh38 chromosome: scaled proportionally, it sits at the same fraction of the file's chromosome.
+                    centromereStart = static_cast<double>(centromere->start) / static_cast<double>(centromere->length);
+                    centromereEnd = static_cast<double>(centromere->end) / static_cast<double>(centromere->length);
                 }
             }
 
@@ -457,11 +457,11 @@ bool Karyogram::renderSDDkaryogram(                                           //
 
                 if(centromere != nullptr)
                 {
-                // Obtain centromre start and end positions for both homologs from the CentromerePosition struct.
-                    firstCentromereStart = static_cast<double>(centromere->start) / (chromosomeSizes[firstIndex] * 1000000.0);
-                    firstCentromereEnd = static_cast<double>(centromere->end) / (chromosomeSizes[firstIndex] * 1000000.0);
-                    secondCentromereStart = static_cast<double>(centromere->start) / (chromosomeSizes[secondIndex] * 1000000.0);
-                    secondCentromereEnd = static_cast<double>(centromere->end) / (chromosomeSizes[secondIndex] * 1000000.0);
+                    // Centromere as a fraction of the GRCh38 chromosome, the same for both homologs: scaled proportionally to each homolog's size.
+                    firstCentromereStart = static_cast<double>(centromere->start) / static_cast<double>(centromere->length);
+                    firstCentromereEnd = static_cast<double>(centromere->end) / static_cast<double>(centromere->length);
+                    secondCentromereStart = firstCentromereStart;
+                    secondCentromereEnd = firstCentromereEnd;
                 }
 
             }
@@ -600,16 +600,16 @@ bool Karyogram::renderSDDkaryogram(                                           //
 
         if (xCentromere != nullptr)
         {
-            // Scale centromere locations from Mbp to bp
-            xCentromereStart = static_cast<double>(xCentromere->start) / (chromosomeSizes[xIndex] * 1000000.0);
-            xCentromereEnd = static_cast<double>(xCentromere->end) / (chromosomeSizes[xIndex] * 1000000.0);
+            // Centromere as a fraction of the GRCh38 X, scaled proportionally to the file's X
+            xCentromereStart = static_cast<double>(xCentromere->start) / static_cast<double>(xCentromere->length);
+            xCentromereEnd = static_cast<double>(xCentromere->end) / static_cast<double>(xCentromere->length);
         }
 
         if (yCentromere != nullptr)
         {
-            // Scale centromere locations from Mbp to bp
-            yCentromereStart = static_cast<double>(yCentromere->start) / (chromosomeSizes[yIndex] * 1000000.0);
-            yCentromereEnd = static_cast<double>(yCentromere->end) / (chromosomeSizes[yIndex] * 1000000.0);
+            // Centromere as a fraction of the GRCh38 Y, scaled proportionally to the file's Y
+            yCentromereStart = static_cast<double>(yCentromere->start) / static_cast<double>(yCentromere->length);
+            yCentromereEnd = static_cast<double>(yCentromere->end) / static_cast<double>(yCentromere->length);
         }
     }
 
