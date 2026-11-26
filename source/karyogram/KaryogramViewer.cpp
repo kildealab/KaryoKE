@@ -360,6 +360,7 @@ button, select { font-size: 14px; padding: 4px 10px; cursor: pointer; }
 #detailSvg text { font-family: sans-serif; font-size: 12px; fill: #333; }
 #detailSvg .tick { font-size: 11px; fill: #555; font-variant-numeric: tabular-nums; }
 #detailSvg .caption { font-size: 12px; fill: #555; }
+#detailSvg .viewtitle { font-size: 20px; font-weight: bold; fill: #222; }
 #detailSvg .marker { cursor: pointer; }
 #detailSvg .marker text { fill: #1e6edc; }
 #detailSvg .inverted { font-size: 11px; fill: #333; }
@@ -692,7 +693,9 @@ const detailSvg = document.getElementById('detailSvg');
 const detailScale = document.getElementById('detailScale');
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const D_MIN_MBP_PER_PX = 0.000001 / 12;     // Deepest zoom: 12 px per base.
-const D_TOP = 44, D_BOTTOM = 24;            // Room above the pieces (captions) and below them at "whole homolog".
+const D_HEAD = 30;                           // Title row at the top of the zoomed view ("Cell 0 - Chromosome 6 - Homolog 2"), kept in downloads
+const D_STRIP = D_HEAD + 26;                 // Bottom of the white strip that holds the title and the piece captions, fixed while zooming
+const D_TOP = 44 + D_HEAD, D_BOTTOM = 24;   // Room above the pieces (title and captions) and below them at "whole homolog".
 const D_WIDTH = 56;                         // Drawn width of a piece; the karyogram's details (pinch, dashes) are scaled from its 20 px.
 const D_K = D_WIDTH / 20;
 let dSlot = null, dTop = 0, dMbpPerPx = 1, dDrag = null, dClipId = 0, dColumns = [];
@@ -704,14 +707,21 @@ function openDetail(slotIndex) {
   dSlot = karyograms[current].detailSlots[slotIndex];
   if (!dSlot) return;
   closePopup();
-  document.getElementById('detailTitle').textContent = dSlot.title;
-  document.getElementById('detailCell').textContent = select.options[current].text;
+  document.getElementById('detailTitle').textContent = TITLE;    // The SDD/SDR file; the cell and homolog are in the title row of the view
+  document.getElementById('detailCell').textContent = '';
   const sdd = dSlot.pieces.some((p) => p.damages.length);
   document.getElementById('detailHint').textContent = 'Scroll or pinch to zoom at the cursor · drag to move along the homolog · '
     + (sdd ? 'point at (or tap) a damage site for its breaks · the ruler gives the position from the p-arm end'
            : 'point at any stretch of a chromosome for the chromosome it came from and its span · click a blue pointer to zoom to that indel · ecDNA and rings are drawn as circles sized by their length, not to the ruler scale (point at them too) · the ruler gives the position along each piece, from its top end');
   detail.hidden = false;
   detailWhole();
+}
+
+// Title row of the zoomed view, e.g. "Cell 0 - Chromosome 6 - Homolog 2" ("Cell 0 - Chromosome X" for an unpaired chromosome, the slot's
+// label for pieces drawn after X and Y).
+function detailHeading() {
+  const homolog = /^(.*), homolog (\d+)$/.exec(dSlot.title);
+  return select.options[current].text + ' - ' + (homolog ? `${homolog[1]} - Homolog ${homolog[2]}` : dSlot.title);
 }
 
 // Closes the zoomed view and returns to the karyogram.
@@ -1040,7 +1050,7 @@ function drawDetailPiece(svg, piece, x, h, sister) {
     const cx = x + D_WIDTH / 2;
     svgElement(body, 'path', { d: `M${cx - armX(from)},${from} L${cx - armX(to)},${to} M${cx + armX(from)},${from} L${cx + armX(to)},${to}`,
       fill: 'none', stroke: '#000', 'stroke-width': 2, 'stroke-linejoin': 'round' });
-    if (yTop < 26 && yBottom > 50) labels.push([Math.max(26, yTop) + 16, `Inverted ${formatRange(startMbp, endMbp)}`]);
+    if (yTop < D_STRIP && yBottom > D_STRIP + 24) labels.push([Math.max(D_STRIP, yTop) + 16, `Inverted ${formatRange(startMbp, endMbp)}`]);
   }
 
   // Boundaries between segments, by the karyogram's rules: none next to a white gap or an inverted piece, none where a moved piece was cut
@@ -1164,7 +1174,7 @@ function drawBandStrip(svg, piece, x, h, slotTitle) {
       const ta = Math.max(-far, ya), tb = Math.min(h + far, yb);
       svgElement(g, 'rect', { x, y: ta, width: D_BAND_W, height: Math.max(0.5, tb - ta), fill: BAND_FILL[band.stain] || '#ffffff' });
       if (band.stain === 'v' || band.stain === 's') svgElement(g, 'path', { d: `M${x},${ta} L${x + D_BAND_W},${tb}`, stroke: '#7d93bd' });
-      if (yb - ya >= 13 && yb > 26 && ya < h) labels.push([(Math.max(26, ya) + Math.min(h, yb)) / 2, band.name]);
+      if (yb - ya >= 13 && yb > D_STRIP && ya < h) labels.push([(Math.max(D_STRIP, ya) + Math.min(h, yb)) / 2, band.name]);
     }
   }
   for (let i = 0; i + 1 < piece.segs.length; i++) {
@@ -1296,11 +1306,11 @@ function detailRender() {
   });
   // Circles (ecDNA, rings) are stacked top to bottom after the linear pieces, each with its label below it, fixed while zooming;
   // a circle that no longer fits the height starts a new stack to the right.
-  let stackY = 36, stackWidth = 0;
+  let stackY = 36 + D_HEAD, stackWidth = 0;
   for (const piece of dSlot.pieces.filter((p) => p.circular)) {
     const diameter = circleDiameter(piece), caption = circleCaption(piece);
     const height = diameter + 8 + 15 * caption.length + 18;
-    if (stackWidth && stackY + height > h) { x += stackWidth + 24; stackY = 36; stackWidth = 0; }
+    if (stackWidth && stackY + height > h) { x += stackWidth + 24; stackY = 36 + D_HEAD; stackWidth = 0; }
     columns.push({ piece, x, y: stackY, diameter, caption });
     stackY += height;
     stackWidth = Math.max(stackWidth, diameter, 7 * Math.max(0, ...caption.map((line) => line.text.length)));
@@ -1347,12 +1357,13 @@ function detailRender() {
 
   // Captions (e.g. "Chromatid 1") stay at the top of the window; the chromosome itself has none, the ruler gives its length. An excised
   // piece gets no name: pointing at it gives the chromosome and span of its material, as for any other piece.
-  svgElement(detailSvg, 'rect', { x: 0, y: 0, width, height: 26, fill: '#ffffff' });
+  svgElement(detailSvg, 'rect', { x: 0, y: 0, width, height: D_STRIP, fill: '#ffffff' });
+  svgElement(detailSvg, 'text', { x: width / 2, y: D_TOP / 2 + 7, 'text-anchor': 'middle', class: 'viewtitle' }, detailHeading());
   for (const column of columns) {
     if (column.piece.circular || column.piece.caption === 'Excised piece') continue;   // Circles carry their spans below them
-    if (column.piece.caption && !column.sister) svgElement(detailSvg, 'text', { x: column.x, y: 17, class: 'caption' }, column.piece.caption);
+    if (column.piece.caption && !column.sister) svgElement(detailSvg, 'text', { x: column.x, y: D_HEAD + 17, class: 'caption' }, column.piece.caption);
   }
-  drawDetailSummary(detailSvg, legendX + shift, drawDetailLegend(detailSvg, legendX + shift, 36) + 14);
+  drawDetailSummary(detailSvg, legendX + shift, drawDetailLegend(detailSvg, legendX + shift, 36 + D_HEAD) + 14);
 
   const pxPerBase = 1 / (dMbpPerPx * 1e6);
   detailScale.textContent = pxPerBase >= 1 ? `1 base = ${pxPerBase.toFixed(1)} px` : `1 px = ${formatLength(dMbpPerPx)}`;
@@ -1620,7 +1631,8 @@ function detailSvgText() {
   const width = Number(detailSvg.getAttribute('width')), height = Number(detailSvg.getAttribute('height'));
   const style = document.createElementNS(SVG_NS, 'style');
   style.textContent = 'text { font-family: sans-serif; font-size: 12px; fill: #333; } .tick { font-size: 11px; fill: #555; font-variant-numeric: tabular-nums; }'
-    + ' .caption { font-size: 12px; fill: #555; } .marker text { fill: #1e6edc; } .inverted { font-size: 11px; fill: #333; }';
+    + ' .caption { font-size: 12px; fill: #555; } .viewtitle { font-size: 20px; font-weight: bold; fill: #222; }'
+    + ' .marker text { fill: #1e6edc; } .inverted { font-size: 11px; fill: #333; }';
   const background = document.createElementNS(SVG_NS, 'rect');
   for (const [key, value] of Object.entries({ x: 0, y: 0, width, height, fill: '#ffffff' })) background.setAttribute(key, value);
   copy.insertBefore(background, copy.firstChild);
