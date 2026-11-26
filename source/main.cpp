@@ -1,6 +1,7 @@
 #include <iostream>
 #include <fstream>
 #include <filesystem>
+#include <algorithm>
 #include <functional>
 #include <vector>
 #include <utility>
@@ -267,13 +268,34 @@ namespace
     // per homolog (SDR mutations or SDD damages). Only the types that are present are listed.
     std::vector<KaryogramHotspot> buildLabelHotspots(
 	const std::vector<KaryogramLabelRegion>& labelRegions,	// From Karyogram::getLabelRegions(), after drawing the cell
-	const std::map<int, std::vector<std::pair<std::string, int>>>& countsPerStrand)	// Strand/chromosome ID -> (type, count), nonzero only
+	const std::map<int, std::vector<std::pair<std::string, int>>>& countsPerStrand,	// Strand/chromosome ID -> (type, count), nonzero only
+	const std::function<std::vector<std::pair<std::string, int>>(const std::vector<int>&)>& countsForRecords = nullptr)	// SDR: (type, count) for the records of a slot after X and Y
     {
         std::vector<KaryogramHotspot> hotspots;
 
         for (const KaryogramLabelRegion& region : labelRegions)
         {
             KaryogramHotspot hotspot;
+
+            // A slot drawn from records (multi-chromosome acentric piece or ecDNA after X and Y): one summary of the mutations those records are part of.
+            if (!region.newStrandIDs.empty())
+            {
+                hotspot.title = region.title;
+                hotspot.x = region.x;
+                hotspot.y = region.y;
+                hotspot.width = region.width;
+                hotspot.height = region.height;
+
+                KaryogramPopupSection section;
+                if (countsForRecords)
+                {
+                    section.counts = countsForRecords(region.newStrandIDs);
+                }
+                hotspot.sections.push_back(std::move(section));
+                hotspots.push_back(std::move(hotspot));
+                continue;
+            }
+
             const std::string name = region.label.rfind("Chr ", 0) == 0 ? region.label.substr(4) : region.label;	// "Chr 1" -> "1", "X" stays "X"
             hotspot.title = "Chromosome " + name;
             hotspot.x = region.x;
@@ -292,9 +314,12 @@ namespace
                     section.heading = "Homolog " + std::to_string(h + 1);
                 }
 
+                const bool emptySlot = std::find(region.emptyStrandIDs.begin(), region.emptyStrandIDs.end(), region.oldStrandIDs[h]) != region.emptyStrandIDs.end();
                 const auto found = countsPerStrand.find(region.oldStrandIDs[h]);
 
-                if (found != countsPerStrand.end())
+                // A homolog whose slot is empty (all of its material sits in other slots) lists nothing: the viewer shows "No mutations detected",
+                // and the events appear on the slots that draw its material.
+                if (!emptySlot && found != countsPerStrand.end())
                 {
                     section.counts = found->second;
                 }
@@ -714,7 +739,8 @@ int main(int argc, char* argv[]) 					// Command line, in this order: --sdd <fil
 		    }
 
 		    image.hotspots = buildLabelHotspots(karyogram.getLabelRegions(),					// Clickable chromosome labels
-			countMutationsPerOriginalStrand(subHeader, parser.getMasterHeader()));
+			countMutationsPerOriginalStrand(subHeader, parser.getMasterHeader()),
+			[&](const std::vector<int>& recordIDs) { return countMutationsForRecords(subHeader, parser.getMasterHeader(), std::set<int>(recordIDs.begin(), recordIDs.end())); });
 		    image.popupNote = "Events involving several chromosomes are counted on each of them.";
 		    image.detailSlots = karyogram.getDetailSlots();					// Clickable homologs for the zoomed view
 		    output.viewerImages.push_back(std::move(image));

@@ -707,7 +707,7 @@ function openDetail(slotIndex) {
   const sdd = dSlot.pieces.some((p) => p.damages.length);
   document.getElementById('detailHint').textContent = 'Scroll or pinch to zoom at the cursor · drag to move along the homolog · '
     + (sdd ? 'point at (or tap) a damage site for its breaks · the ruler gives the position from the p-arm end'
-           : 'point at any stretch of a chromosome for the chromosome it came from and its span · click a blue pointer to zoom to that indel · ecDNA and rings are drawn as circles sized by their length, not to the ruler scale · the ruler gives the position along each piece, from its top end');
+           : 'point at any stretch of a chromosome for the chromosome it came from and its span · click a blue pointer to zoom to that indel · ecDNA and rings are drawn as circles sized by their length, not to the ruler scale (point at them too) · the ruler gives the position along each piece, from its top end');
   detail.hidden = false;
   detailWhole();
 }
@@ -728,28 +728,30 @@ function circleDiameter(piece) {
   return Math.min(200, 40 + whole * piece.len / detailLength());
 }
 
-// Original spans [from, to] of the material of a piece, in Mbp: stretches of one colour that continue each other (within a base) are joined.
+// Original spans [from, to] of the material of a piece, in Mbp, each with the chromosome and homolog it came from: stretches of one
+// chromosome that continue each other (within a base) are joined.
 function pieceSpans(piece) {
   const spans = [];
   for (const s of piece.segs) {
     if (s[3] || s[8] < 0) continue;
-    const last = spans[spans.length - 1];
-    if (last && last.color === s[2] && Math.abs(s[8] - last.to) <= 1.5e-6) last.to = s[9];
-    else if (last && last.color === s[2] && Math.abs(s[9] - last.from) <= 1.5e-6) last.from = s[8];
-    else spans.push({ from: s[8], to: s[9], color: s[2] });
+    const last = spans[spans.length - 1], same = last && last.color === s[2] && last.name === s[10];
+    if (same && Math.abs(s[8] - last.to) <= 1.5e-6) last.to = s[9];
+    else if (same && Math.abs(s[9] - last.from) <= 1.5e-6) last.from = s[8];
+    else spans.push({ from: s[8], to: s[9], color: s[2], name: s[10] });
   }
   return spans;
 }
 
-// Label lines of a circular piece: "ecDNA: X Mbp – Y Mbp" (or "Ring: ..."), the original span of its material; further spans of a circle
-// made of several pieces follow on lines of their own (at most four, then how many more).
+// Label lines of a circular piece, laid out like its tooltip: the chromosome and homolog its material came from (bold), then the original
+// spans taken from it, e.g. "Chromosome 14, homolog 1" over "60 – 75 Mbp"; one such group per chromosome in turn (at most four spans, then
+// how many more). Returns { text, bold } lines.
 function circleCaption(piece) {
-  const mbp = (value) => String(Number(value.toFixed(6))) + ' Mbp';
-  const spans = pieceSpans(piece).map((s) => `${mbp(s.from)} – ${mbp(s.to)}`);
-  const kind = /^Ring/.test(piece.caption) ? 'Ring' : 'ecDNA';
-  if (!spans.length) return [kind];
-  const lines = [`${kind}: ${spans[0]}`, ...spans.slice(1, 4)];
-  if (spans.length > 4) lines.push(`and ${spans.length - 4} more`);
+  const spans = pieceSpans(piece), lines = [];
+  spans.slice(0, 4).forEach((s, i) => {
+    if (i === 0 || s.name !== spans[i - 1].name) lines.push({ text: s.name || 'Unknown chromosome', bold: true });
+    lines.push({ text: formatSpan(s.from, s.to), bold: false });
+  });
+  if (spans.length > 4) lines.push({ text: `and ${spans.length - 4} more`, bold: false });
   return lines;
 }
 
@@ -762,6 +764,7 @@ function drawDetailCircle(svg, piece, column) {
   const d = column.diameter, r = d / 2, inner = d / 4, cx = column.x + r, cy = column.y + r, len = Math.max(1e-12, piece.len);
   const cen = piece.segs.find((s) => s[6] >= 0);
   const turn = cen ? (cen[6] + cen[7]) / 2 : 0;                      // Material at the top of the ring
+  Object.assign(column, { cx, cy, r, inner, turn });                 // Kept for the tooltip, to find the stretch under the pointer
   const angle = (mbp) => 2 * Math.PI * (mbp - turn) / len;
   const point = (mbp, radius) => [cx + radius * Math.sin(angle(mbp)), cy - radius * Math.cos(angle(mbp))];
   const full = (a, b) => b - a >= len - 1e-9;
@@ -838,7 +841,8 @@ function drawDetailCircle(svg, piece, column) {
         'stroke-dasharray': cen[5] ? '6 4' : 'none' });
     }
   }
-  column.caption.forEach((line, i) => svgElement(svg, 'text', { x: column.x, y: column.y + d + 16 + 15 * i, class: i ? 'tick' : 'caption' }, line));
+  column.caption.forEach((line, i) => svgElement(svg, 'text', { x: column.x, y: column.y + d + 16 + 15 * i, class: line.bold ? 'caption' : 'tick',
+    'font-weight': line.bold ? 'bold' : 'normal' }, line.text));
 }
 
 // Keeps the zoom between "whole homolog" and 12 px per base, and the view on the homolog. Alters dTop and dMbpPerPx.
@@ -1297,7 +1301,7 @@ function detailRender() {
     if (stackWidth && stackY + height > h) { x += stackWidth + 24; stackY = 36; stackWidth = 0; }
     columns.push({ piece, x, y: stackY, diameter, caption });
     stackY += height;
-    stackWidth = Math.max(stackWidth, diameter, 7 * Math.max(...caption.map((line) => line.length)));
+    stackWidth = Math.max(stackWidth, diameter, 7 * Math.max(0, ...caption.map((line) => line.text.length)));
   }
   if (stackWidth) x += stackWidth + 24;
   // The panel is only as wide as its pieces need (at least wide enough for its toolbar, at most the window), so one homolog is not
@@ -1339,10 +1343,11 @@ function detailRender() {
     svgElement(detailSvg, 'text', { x: rulerX - 9, y: ty + 4, 'text-anchor': 'end', class: 'tick' }, formatPosition(t, step));
   }
 
-  // Captions (e.g. "Excised piece") stay at the top of the window; the chromosome itself has none, the ruler gives its length.
+  // Captions (e.g. "Chromatid 1") stay at the top of the window; the chromosome itself has none, the ruler gives its length. An excised
+  // piece gets no name: pointing at it gives the chromosome and span of its material, as for any other piece.
   svgElement(detailSvg, 'rect', { x: 0, y: 0, width, height: 26, fill: '#ffffff' });
   for (const column of columns) {
-    if (column.piece.circular) continue;                            // Circles carry their label below them
+    if (column.piece.circular || column.piece.caption === 'Excised piece') continue;   // Circles carry their spans below them
     if (column.piece.caption && !column.sister) svgElement(detailSvg, 'text', { x: column.x, y: 17, class: 'caption' }, column.piece.caption);
   }
   drawDetailSummary(detailSvg, legendX + shift, drawDetailLegend(detailSvg, legendX + shift, 36) + 14);
@@ -1398,6 +1403,15 @@ function showStretchBox(box) {
   const old = document.getElementById('detailStretchBox');
   if (old) old.remove();
   if (!box) return;
+  if (box.circle) {                                                  // A wedge of a circle: outlined along the band, a little outside it
+    const c = box.circle, R = c.r + 3, I = Math.max(1, c.inner - 3), full = box.end - box.start >= box.len - 1e-9;
+    const p = (mbp, radius) => { const a = 2 * Math.PI * (mbp - c.turn) / box.len; return `${c.cx + radius * Math.sin(a)},${c.cy - radius * Math.cos(a)}`; };
+    const large = (box.end - box.start) / box.len > 0.5 ? 1 : 0;
+    const d = full ? `M${c.cx - R},${c.cy} a${R},${R} 0 1 0 ${2 * R},0 a${R},${R} 0 1 0 ${-2 * R},0 M${c.cx - I},${c.cy} a${I},${I} 0 1 1 ${2 * I},0 a${I},${I} 0 1 1 ${-2 * I},0`
+                   : `M${p(box.start, R)} A${R},${R} 0 ${large} 1 ${p(box.end, R)} L${p(box.end, I)} A${I},${I} 0 ${large} 0 ${p(box.start, I)} Z`;
+    svgElement(detailSvg, 'path', { id: 'detailStretchBox', d, fill: 'none', stroke: '#4fb3ff', 'stroke-width': 2.5, 'stroke-linejoin': 'round', 'pointer-events': 'none' });
+    return;
+  }
   const h = detailView.clientHeight, y = (mbp) => (mbp - dTop) / dMbpPerPx;
   let top = Math.max(-4, y(box.start)), bottom = Math.min(h + 4, y(box.end));
   if (bottom - top < 6) { const c = (top + bottom) / 2; top = c - 3; bottom = c + 3; }
@@ -1412,12 +1426,43 @@ function formatSpan(startMbp, endMbp) {
   return `${mbp(startMbp)} – ${mbp(endMbp)} Mbp`;
 }
 
-// What the pointer is over in an SDR chromosome or excised piece: the chromosome its bases came from and their original span, for every
-// stretch (a white gap gives the chromosome and span of the deleted bases). No mutation names: those are the detectors' reading, the tooltip
-// gives only what the SDR record says. Circles (ecDNA, rings) get none, their label already gives their span. Returns the tooltip lines, the
-// first one bold, or null.
+// Tooltip lines for a stretch of a piece: the chromosome its bases came from (a white gap belongs to the material around it) and their
+// original span, with the first line bold. Null when the stretch has no known origin.
+function stretchTip(segs, index) {
+  if (index < 0 || segs[index][8] < 0) return null;
+  let name = segs[index][10];
+  for (let k = index - 1; !name && k >= 0; k--) if (!segs[k][3]) name = segs[k][10];
+  for (let k = index + 1; !name && k < segs.length; k++) if (!segs[k][3]) name = segs[k][10];
+  return [name || 'Unknown chromosome', formatSpan(segs[index][8], segs[index][9])];
+}
+
+// What the pointer is over in a circle (ecDNA or ring): the stretch of band under it, found from its angle (clockwise from the top, as drawn),
+// a white gap first with a little slack since it is drawn at least one degree wide. Returns the tooltip lines with the wedge to outline, or null.
+function circleTipAt(px, py) {
+  const column = dColumns.find((c) => c.piece.circular && c.r && Math.hypot(px - c.cx, py - c.cy) <= c.r + 3
+                                       && Math.hypot(px - c.cx, py - c.cy) >= c.inner - 3);
+  if (!column) return null;
+  const segs = column.piece.segs, len = Math.max(1e-12, column.piece.len);
+  const theta = (Math.atan2(px - column.cx, column.cy - py) + 2 * Math.PI) % (2 * Math.PI);
+  const at = (column.turn + len * theta / (2 * Math.PI)) % len;
+  const slack = Math.max(len / 720, len * 3 / (2 * Math.PI * column.r));
+  const near = (s) => { const c = (s[0] + s[1]) / 2, half = (s[1] - s[0]) / 2 + slack, d = Math.abs(at - c); return Math.min(d, len - d) <= half; };
+  let index = segs.findIndex((s) => s[3] && near(s));
+  if (index < 0) index = segs.findIndex((s) => at >= s[0] && at <= s[1]);
+  const lines = stretchTip(segs, index);
+  if (!lines) return null;
+  const s = segs[index], half = Math.max(s[1] - s[0], len / 360) / 2, c = (s[0] + s[1]) / 2;
+  lines.box = { circle: column, start: c - half, end: c + half, len };
+  return lines;
+}
+
+// What the pointer is over in an SDR chromosome, excised piece or circle: the chromosome its bases came from and their original span, for
+// every stretch (a white gap gives the chromosome and span of the deleted bases). No mutation names: those are the detectors' reading, the
+// tooltip gives only what the SDR record says. Returns the tooltip lines, the first one bold, or null.
 function segmentTipAt(clientX, clientY) {
   const r = detailSvg.getBoundingClientRect(), px = clientX - r.left, py = clientY - r.top;
+  const circle = circleTipAt(px, py);
+  if (circle) return circle;
   const column = dColumns.find((c) => !c.piece.circular && px >= c.x && px <= c.x + D_WIDTH);
   if (!column || column.piece.damages.length) return null;
   const piece = column.piece, segs = piece.segs, at = dTop + py * dMbpPerPx, slack = 1.5 * dMbpPerPx;
@@ -1425,16 +1470,14 @@ function segmentTipAt(clientX, clientY) {
   // A white gap first, with a little slack so even a gap of a few bases can be aimed at; otherwise the stretch under the pointer.
   let index = segs.findIndex((s) => s[3] && at >= s[0] - slack && at <= s[1] + slack);
   if (index < 0) index = segs.findIndex((s) => at >= s[0] && at <= s[1]);
-  if (index < 0 || segs[index][8] < 0) return null;
-  let name = segs[index][10];
-  for (let k = index - 1; !name && k >= 0; k--) if (!segs[k][3]) name = segs[k][10];          // A gap belongs to the chromosome around it
-  for (let k = index + 1; !name && k < segs.length; k++) if (!segs[k][3]) name = segs[k][10];
-  const lines = [name || 'Unknown chromosome', formatSpan(segs[index][8], segs[index][9])];
+  const lines = stretchTip(segs, index);
+  if (!lines) return null;
   lines.box = { x: column.x, start: segs[index][0], end: segs[index][1] };   // The stretch to outline while it is pointed at
   return lines;
 }
 
-// Shows the tooltip for whatever is under the pointer: SDD damage sites first, otherwise the span of a deleted segment or excised piece (circles carry their span in their label).
+// Shows the tooltip for whatever is under the pointer: SDD damage sites first, otherwise the origin and span of the stretch of a chromosome,
+// excised piece or circle under it.
 function showDetailTip(clientX, clientY) {
   const sites = damageSitesAt(clientX, clientY);
   if (sites.length) { showDamageTip(clientX, clientY); showStretchBox(sites.box); return; }

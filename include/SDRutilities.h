@@ -4829,6 +4829,73 @@ inline std::map<int, std::vector<std::pair<std::string, int>>> countMutationsPer
 }
 
 
+// Mutations that the given records (newStrandIDs) are part of, for the label of a karyogram slot drawn from records rather than from one chromosome
+// (a multi-chromosome acentric piece or ecDNA placed after X and Y). Each event is counted once when any of its records is among them, using the
+// same detectors and type names as countMutationsPerOriginalStrand(). Changes no detector explains are listed per chromosome only, not here.
+inline std::vector<std::pair<std::string, int>> countMutationsForRecords(const SDRsubHeader& rawSubHeader, const SDRmasterHeader& masterHeader,
+                                                                         const std::set<int>& newStrandIDs)
+{
+    const int numOriginalStrands = masterHeader.intactChromosomeSizes.empty() ? 0 : static_cast<int>(masterHeader.intactChromosomeSizes[0]);
+
+    std::vector<SDRindelEvent> indels;
+    const SDRsubHeader subHeader = removeIndels(rawSubHeader, numOriginalStrands, &indels);
+
+    std::map<std::string, int> counts;
+
+    // Count one mutation of this type when any of its records is drawn in the slot.
+    auto addEvent = [&](const std::string& type, const std::vector<int>& recordIDs)
+    {
+        for (int recordID : recordIDs)
+        {
+            if (newStrandIDs.count(recordID))
+            {
+                counts[type]++;
+                return;
+            }
+        }
+    };
+
+    for (const auto& e : detectDeletions(subHeader, numOriginalStrands, masterHeader))            addEvent("Long Deletions", {e.remainingStrandID, e.excisedStrandID});
+    for (const auto& e : detectInversions(subHeader, numOriginalStrands, masterHeader))           addEvent("Balanced Inversions", {e.newStrandID});
+    for (const auto& e : detectTranslocations(subHeader, numOriginalStrands, masterHeader))       addEvent("Balanced Translocations", {e.newStrandID1, e.newStrandID2});
+    for (const auto& e : detectECDNA(subHeader, numOriginalStrands, masterHeader))
+    {
+        std::vector<int> recordIDs = e.remainingStrandIDs;
+        recordIDs.push_back(e.excisedStrandID);
+        addEvent("Extrachromosomal DNA (ecDNA)", recordIDs);
+    }
+    for (const auto& e : detectDeletionInversions(subHeader, numOriginalStrands, masterHeader))   addEvent("Deletion-Inversions", {e.remainingStrandID, e.excisedStrandID});
+    for (const auto& e : detectDeletionTranslocations(subHeader, numOriginalStrands, masterHeader)) addEvent("Deletion-Translocations", {e.newStrandID1, e.newStrandID2, e.excisedStrandID});
+    for (const auto& e : detectDeletionInsertions(subHeader, numOriginalStrands))                 addEvent("Deletion-Insertions", {e.donorRemainingNewStrandID, e.recipientNewStrandID});
+    for (const auto& e : detectChromoplexy(subHeader, numOriginalStrands, masterHeader))          addEvent("Chromoplexy", e.contributingNewStrandIDs);
+    for (const auto& e : detectChromothripsis(subHeader, numOriginalStrands))                     addEvent("Chromothripsis", e.contributingNewStrandIDs);
+    for (const auto& e : detectComplexGenomicRearrangements(subHeader, numOriginalStrands))       addEvent("Complex Genomic Rearrangements", e.contributingNewStrandIDs);
+    for (const auto& e : detectChromosomeRings(subHeader, numOriginalStrands))                    addEvent("Ring Chromosomes", {e.newStrandID});
+    for (const auto& e : detectDicentrics(subHeader, numOriginalStrands))                         addEvent("Dicentrics", {e.newStrandID});
+    for (const auto& e : indels)                                                                  addEvent("Indels", {e.newStrandID});
+
+    // Same order as the "Mutation Summary" in the SDR summary file.
+    const std::vector<std::string> typeOrder = {
+        "Long Deletions", "Balanced Inversions", "Balanced Translocations", "Extrachromosomal DNA (ecDNA)", "Deletion-Inversions",
+        "Deletion-Translocations", "Deletion-Insertions", "Chromoplexy", "Chromothripsis", "Complex Genomic Rearrangements", "Ring Chromosomes", "Dicentrics",
+        "Indels"};
+
+    std::vector<std::pair<std::string, int>> result;
+
+    for (const std::string& type : typeOrder)
+    {
+        const auto it = counts.find(type);
+
+        if (it != counts.end())
+        {
+            result.emplace_back(type, it->second);
+        }
+    }
+
+    return result;
+}
+
+
 // Number of complex genomic rearrangements in one cell, for the Mutation Summary and the karyogram's box: the 1-2 strand clusters with 4+ pieces out
 // of order or shattered exchanged material (detectComplexGenomicRearrangements()), plus one for every chromosome with a change no other mutation type accounts for.
 // Indels are taken out first (see removeIndels()), so they never count here.

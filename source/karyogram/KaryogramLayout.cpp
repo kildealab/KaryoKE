@@ -1212,6 +1212,13 @@ void Karyogram::drawChromosomeLabel(						// Draw a chromosome label and remembe
     region.width = extents.width + 2.0 * padding;
     region.height = extents.height + 2.0 * padding;
     region.oldStrandIDs = oldStrandIDs;
+    for (int strandID : oldStrandIDs)
+    {
+        if (emptySlotStrandIDs.count(strandID))
+        {
+            region.emptyStrandIDs.push_back(strandID);
+        }
+    }
     labelRegions.push_back(region);
 }
 

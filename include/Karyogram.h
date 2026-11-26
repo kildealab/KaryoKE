@@ -7,6 +7,7 @@
 #include <vector>
 #include <utility>
 #include <map>
+#include <set>
 
 #include "SDDtypes.h"
 #include "SDRtypes.h"
@@ -87,6 +88,11 @@ struct KaryogramLabelRegion                     // Where a chromosome label was 
     double height;
     std::vector<int> oldStrandIDs;              // Chromosome(s) drawn in this slot: SDR original strand IDs or SDD data Field 3 chromosome numbers.
                                                 // Homolog 1 first, then homolog 2 for homologous layouts.
+    std::vector<int> newStrandIDs;              // SDR slots after X and Y (multi-chromosome acentric pieces and ecDNA): the records drawn there. Their label's
+                                                // summary lists the mutations those records are part of, instead of per chromosome; empty for other labels.
+    std::string title;                          // Name of such a slot, the same as its zoomed view's title, e.g. "Acentric piece chr1-chr2*"; empty otherwise.
+    std::vector<int> emptyStrandIDs;            // SDR: those of oldStrandIDs whose slot is left empty because all of the chromosome's material is drawn in other
+                                                // slots; their summary lists nothing, the events show on the slots that draw the material.
 };
 
 
@@ -158,6 +164,7 @@ private:
     std::vector<SDRindelEvent> detailIndels;		// Indels of the cell being drawn: never drawn on the karyogram, marked in the zoomed view
     const SDRmasterHeader* detailMasterHeader = nullptr;	// Header of the cell being drawn, for chromosome sizes
     bool detailHumanGenome = true;
+    std::set<int> emptySlotStrandIDs;			// SDR original strands whose slot is drawn empty (all of their material sits in other slots), see KaryogramLabelRegion
     std::map<int, std::string> detailStrandNames;		// Original strand ID -> its homolog's name, e.g. "Chromosome 5, homolog 2"
 
     // Starts recording a homolog slot's pieces under the given title; returns its index. endDetailSlot() stops recording and drops an empty slot.

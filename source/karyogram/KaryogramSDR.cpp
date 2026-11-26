@@ -143,6 +143,7 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
     labelRegions.clear();						// Label positions are recorded fresh for every karyogram
     detailSlots.clear();						// So are the homolog slots of the zoomed view
     detailStrandNames.clear();
+    emptySlotStrandIDs.clear();
     currentDetailSlot = -1;
     detailIndels.clear();
     detailMasterHeader = &masterHeader;
@@ -526,7 +527,7 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
     // never touched, or nothing if consumed by chromoplexy rearrangement. This check has to run before the map lookup below,
     // a fully-consumed strand still has its own trivial baseline entry in recordsByOriginalStrand (nothing else references that strand 
     // to trigger filterBaselineIfMutated), so checking 'found in the map' first would let that baseline slip through as a false intact chromosome.
-    auto resolveSlotRecords = [&](int oldStrandID) -> std::vector<const SDRdataRecord*>
+    auto resolveSlotRecordsUnmarked = [&](int oldStrandID) -> std::vector<const SDRdataRecord*>
     {
 	if (chromoplexyConsumedStrands.count(oldStrandID))
     	{
@@ -555,6 +556,19 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
         }
 
         return synthesizeIntactRecordIfMissing(oldStrandID, subHeader.cellID, masterHeader, intactRecordStorage);
+    };
+
+    // Records drawn in a strand's slot; a strand whose slot stays empty is remembered, so its label's summary lists nothing for it.
+    auto resolveSlotRecords = [&](int oldStrandID) -> std::vector<const SDRdataRecord*>
+    {
+        std::vector<const SDRdataRecord*> records = resolveSlotRecordsUnmarked(oldStrandID);
+
+        if (records.empty())
+        {
+            emptySlotStrandIDs.insert(oldStrandID);
+        }
+
+        return records;
     };
 
 
@@ -864,8 +878,16 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
 
 	cairo_text_extents_t labelExtents;
 	cairo_text_extents(cr, chromoplexyLabel.c_str(), &labelExtents);
-	cairo_move_to(cr, slotCenterX - labelExtents.width / 2.0, slotPosY + slotLabelHeight + 25.0);
-	cairo_show_text(cr, chromoplexyLabel.c_str());
+
+	// Clickable label: its summary lists the mutations the records drawn here are part of.
+	std::vector<int> drawnRecordIDs;
+	for (const SDRdataRecord* leftoverRecord : leftoverRecords)
+	{
+	    drawnRecordIDs.push_back(leftoverRecord->newStrandID);
+	}
+	drawChromosomeLabel(cr, chromoplexyLabel, slotCenterX - labelExtents.width / 2.0, slotPosY + slotLabelHeight + 25.0, {});
+	labelRegions.back().newStrandIDs = drawnRecordIDs;
+	labelRegions.back().title = "Acentric piece " + chromoplexyLabel;
     }
 
 
@@ -983,8 +1005,11 @@ bool Karyogram::renderSDRkaryogram(					// Function to draw a karyogram of the r
 
         cairo_text_extents_t ecDNAlabelExtents;
         cairo_text_extents(cr, ecDNAlabel.c_str(), &ecDNAlabelExtents);
-        cairo_move_to(cr, slotCenterX - ecDNAlabelExtents.width / 2.0, slotPosY + diameter + 25.0);
-        cairo_show_text(cr, ecDNAlabel.c_str());
+
+        // Clickable label: its summary lists the mutations the circular record drawn here is part of.
+        drawChromosomeLabel(cr, ecDNAlabel, slotCenterX - ecDNAlabelExtents.width / 2.0, slotPosY + diameter + 25.0, {});
+        labelRegions.back().newStrandIDs = { circularRecord->newStrandID };
+        labelRegions.back().title = "ecDNA " + ecDNAlabel;
     }
 
 
@@ -4646,6 +4671,14 @@ void Karyogram::recordDetailCircle(const SDRdataRecord& record, double centerX, 
 
         detail.originStartMbp = std::min(segment.oldStartPosition, segment.oldEndPosition);
         detail.originEndMbp = std::max(segment.oldStartPosition, segment.oldEndPosition);
+
+        // The homolog the material came from, for the circle's label and tooltip in the zoomed view.
+        const auto name = detailStrandNames.find(segment.oldStrandID);
+        if (name != detailStrandNames.end())
+        {
+            detail.originName = name->second;
+        }
+
         piece.segments.push_back(detail);
         origins.push_back({ segment.oldStrandID, detail.originStartMbp, detail.originEndMbp });
     }
