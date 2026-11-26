@@ -416,7 +416,9 @@ button, select { font-size: 14px; padding: 4px 10px; cursor: pointer; }
 <div id="detail" hidden role="dialog" aria-label="Zoomed homolog"><div id="detailPanel">
 <div id="detailBar"><span id="detailTitle"></span><span id="detailCell"></span><div class="spacer"></div>
 <div class="group"><button id="detailOut" title="Zoom out (-)">&minus;</button><button id="detailIn" title="Zoom in (+)">+</button><button id="detailWhole" title="Show the whole homolog (0)">Whole homolog</button></div>
-<span id="detailScale"></span><button id="detailClose" title="Back to the karyogram (Esc)">Close &times;</button></div>
+<span id="detailScale"></span>
+<div class="group"><select id="detailFormat" title="File format for the zoomed view download"><option value="png">PNG</option><option value="svg">SVG</option></select><button id="detailDownload" title="Download the zoomed view as shown">Download</button></div>
+<button id="detailClose" title="Back to the karyogram (Esc)">Close &times;</button></div>
 <div id="detailView"><svg id="detailSvg" xmlns="http://www.w3.org/2000/svg"></svg></div>
 <div id="detailHint"></div>
 </div><div id="detailTip" hidden></div></div>
@@ -1420,6 +1422,8 @@ function showStretchBox(box) {
     fill: 'none', stroke: '#4fb3ff', 'stroke-width': 2.5, 'pointer-events': 'none' });
 }
 
+const D_MIN_HIT_PX = 8;                       // Smallest screen height a stretch can be pointed at over, in px
+
 // Formats an original span in Mbp with up to six decimals (single bases), e.g. "40.000001 – 60 Mbp".
 function formatSpan(startMbp, endMbp) {
   const mbp = (value) => String(Number(value.toFixed(6)));
@@ -1467,9 +1471,16 @@ function segmentTipAt(clientX, clientY) {
   if (!column || column.piece.damages.length) return null;
   const piece = column.piece, segs = piece.segs, at = dTop + py * dMbpPerPx, slack = 1.5 * dMbpPerPx;
   if (at < 0 || at > piece.len) return null;
-  // A white gap first, with a little slack so even a gap of a few bases can be aimed at; otherwise the stretch under the pointer.
-  let index = segs.findIndex((s) => s[3] && at >= s[0] - slack && at <= s[1] + slack);
-  if (index < 0) index = segs.findIndex((s) => at >= s[0] && at <= s[1]);
+  // Every stretch can be aimed at over at least D_MIN_HIT_PX of screen, centred on it, so a white gap or a reversed stretch of a few bases
+  // (drawn as a thin line) can be pointed at without zooming in; where such areas overlap, the shortest stretch wins, so a tiny stretch is
+  // never hidden by the long one around it.
+  const minMbp = D_MIN_HIT_PX * dMbpPerPx;
+  let index = -1;
+  segs.forEach((s, k) => {
+    const grow = Math.max(slack, (minMbp - (s[1] - s[0])) / 2);
+    if (at < s[0] - grow || at > s[1] + grow) return;
+    if (index < 0 || s[1] - s[0] < segs[index][1] - segs[index][0]) index = k;
+  });
   const lines = stretchTip(segs, index);
   if (!lines) return null;
   lines.box = { x: column.x, start: segs[index][0], end: segs[index][1] };   // The stretch to outline while it is pointed at
@@ -1591,6 +1602,49 @@ function saveFile(bytes, name, type) {
 }
 
 const MIME = { png: 'image/png', svg: 'image/svg+xml' };
+
+// File name of the zoomed view: the karyogram's name followed by the slot, e.g. "t_cell0_karyogram_human_chr6_h2.png"; slots after X and Y
+// ("ecDNA chr14-chr46*") keep their label with spaces and other signs made underscores.
+function detailDownloadName(format) {
+  const match = /^Chromosome (\w+), homolog (\d+)$/.exec(dSlot.title) || /^Chromosome (\w+)$/.exec(dSlot.title);
+  const slot = match ? 'chr' + match[1] + (match[2] ? '_h' + match[2] : '') : dSlot.title.replace(/[^A-Za-z0-9-]+/g, '_').replace(/^_|_$/g, '');
+  return downloadName(karyograms[current], format).replace(/\.(png|svg)$/i, '') + '_' + slot + '.' + format;
+}
+
+// The zoomed view as one standalone SVG file, exactly as shown (zoom, ruler, pieces, cytobands, symbols and summary boxes), on a white
+// background, with the page's text styles written into it; the pointer outline and tooltip are left out. Returns the SVG text and its size.
+function detailSvgText() {
+  const copy = detailSvg.cloneNode(true);
+  copy.querySelector('#detailStretchBox')?.remove();
+  copy.removeAttribute('id');
+  const width = Number(detailSvg.getAttribute('width')), height = Number(detailSvg.getAttribute('height'));
+  const style = document.createElementNS(SVG_NS, 'style');
+  style.textContent = 'text { font-family: sans-serif; font-size: 12px; fill: #333; } .tick { font-size: 11px; fill: #555; font-variant-numeric: tabular-nums; }'
+    + ' .caption { font-size: 12px; fill: #555; } .marker text { fill: #1e6edc; } .inverted { font-size: 11px; fill: #333; }';
+  const background = document.createElementNS(SVG_NS, 'rect');
+  for (const [key, value] of Object.entries({ x: 0, y: 0, width, height, fill: '#ffffff' })) background.setAttribute(key, value);
+  copy.insertBefore(background, copy.firstChild);
+  copy.insertBefore(style, copy.firstChild);
+  return { text: '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(copy), width, height };
+}
+
+// Downloads the zoomed view as SVG, or as PNG drawn from that SVG at twice the screen size so it stays sharp.
+document.getElementById('detailDownload').onclick = () => {
+  if (!dSlot) return;
+  const format = document.getElementById('detailFormat').value, svg = detailSvgText(), name = detailDownloadName(format);
+  if (format === 'svg') { saveFile(new TextEncoder().encode(svg.text), name, MIME.svg); return; }
+  const image = new Image(), url = URL.createObjectURL(new Blob([svg.text], { type: MIME.svg }));
+  image.onload = () => {
+    const canvas = document.createElement('canvas'), scale = 2;
+    canvas.width = svg.width * scale; canvas.height = svg.height * scale;
+    const context = canvas.getContext('2d');
+    context.scale(scale, scale);
+    context.drawImage(image, 0, 0);
+    URL.revokeObjectURL(url);
+    canvas.toBlob((blob) => blob.arrayBuffer().then((buffer) => saveFile(new Uint8Array(buffer), name, MIME.png)), MIME.png);
+  };
+  image.src = url;
+};
 
 document.getElementById('download').onclick = () => {
   const k = karyograms[current], format = formatSelect.value;
